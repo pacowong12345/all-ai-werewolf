@@ -1,0 +1,16 @@
+node_modules/
+dist/
+data/
+.env
+
+# Local credentials, runtime data, and task artifacts
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.log
+coverage/
+work/
+outputs/
