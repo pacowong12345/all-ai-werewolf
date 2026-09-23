@@ -1,5 +1,23 @@
 // @ts-nocheck
 import "./style.css";
+import "./learning.css";
+
+function learningEscape(value:unknown) { return String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!)); }
+async function renderLearning() {
+  stream?.close();
+  app.innerHTML = '<main><p>正在读取个人经验库…</p></main>';
+  try {
+    const agents = await api<any[]>('/api/learning');
+    app.innerHTML = `<main><header><button id="learning-back" class="ghost">← 返回</button><h1>个人经验库</h1></header><p class="learning-intro">每局无论胜败都会积累经验。按当前身份与任务检索相关经验，供 AI 判断参考。这里显示公开票型统计与改进原则；“模型复盘”表示人物模型已选定改进重点，“统计提炼”表示来自可验证战绩。经验不等于事实，不保证胜率持续提高。</p><section class="learning-grid">${agents.map(agent => `<article class="learning-card"><h2>${learningEscape(agent.name)}</h2><small>${agent.experiences.length} 份经验 · ${agent.experiences.filter(x=>x.reviewed).length} 份模型复盘</small>${agent.experiences.length ? agent.experiences.slice(0,3).map(x=>`<p>${learningEscape(x.summary)}</p><small>${x.reviewed?'模型复盘':'统计提炼'} · 来源对局 ${learningEscape(x.gameId.slice(0,8))} · ${x.sourceEventIds.length} 条公开票型</small>`).join('') : '<p>尚无已结束对局经验，参赛后自动积累。</p>'}</article>`).join('')}</section></main>`;
+    document.querySelector('#learning-back')!.addEventListener('click',renderHome);
+  } catch { app.innerHTML='<main><p>经验库读取失败，请刷新重试。</p><button id="learning-back">返回</button></main>'; document.querySelector('#learning-back')!.addEventListener('click',renderHome); }
+}
+new MutationObserver(() => {
+  const header = document.querySelector('main.home header');
+  if (header && !header.querySelector('#learning-link')) {
+    const button = document.createElement('button'); button.id='learning-link'; button.className='ghost'; button.textContent='个人经验库'; button.onclick=()=>void renderLearning(); header.append(button);
+  }
+}).observe(document.documentElement,{childList:true,subtree:true});
 
 type Event = { id:number; type:string; phase:string; payload:Record<string, unknown>; visibility:string; createdAt:string };
 type Game = { id:string; day:number; phase:string; status:string; sheriff?:number; winner?:string; speed:number; players:Array<{seat:number; role:string; alive:boolean; persona:{name:string}}> };

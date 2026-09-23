@@ -6,6 +6,7 @@ import { ROLE_SLOTS } from "./types.js";
 import type { LocalStore } from "./store.js";
 import { chronicle, relation, safeMemory, seededShuffle } from "./world.js";
 import type { WorldAgent } from "./types.js";
+import { LESSONS, extractExperience, retrieveExperiences, summarizeExperience, type Lesson } from "./learning.js";
 
 const roleOf = (slot: RoleSlot): Role => slot.startsWith("狼人") ? "狼人" : slot.startsWith("村民") ? "村民" : slot as Role;
 const defaultBinding = { provider: "mock" as const, model: "offline-demo" };
@@ -76,12 +77,15 @@ export class GameEngine {
   }
   private async decideFor(player: Player, candidates: number[], intent: string) {
     const profile = this.profileFor(player); const started = Date.now();
-    const memory = player.agentId ? this.store.memories(player.agentId).join("；") : "";
+    const experiences = player.agentId ? retrieveExperiences(this.store.experiences(player.agentId), player.agentId, this.game.id, player.role, intent) : [];
+    const memory = experiences.map(summarizeExperience).join("\n");
+    const agent = player.agentId ? this.store.worldAgent(player.agentId) : undefined;
+    intent = `你是本局${player.seat}号。存活座位：${this.alive().map(p => p.seat).join("、")}。当前警长：${this.game.sheriff ?? "无"}。你自己的当前判断（可修正）：${JSON.stringify(player.belief)}。个人策略参数：${JSON.stringify(agent?.strategy ?? {})}。\n${intent}`;
     const visible = this.store.events(this.game.id)
       .filter(event => event.visibility === "public"
         || (event.visibility === "private" && event.audience?.includes(player.seat))
         || (event.visibility === "wolves" && player.role === "狼人"))
-      .slice(-24)
+      .filter((event, index, all) => event.visibility === "private" || index >= all.length - 36)
       .map(event => `${event.type}: ${JSON.stringify(event.payload)}`)
       .join("\n");
     const teammates = player.role === "狼人"
@@ -163,6 +167,10 @@ export class GameEngine {
     if (wolves === 0 || wolves >= alive.length - wolves) { this.game.winner = wolves === 0 ? "好人" : "狼人"; this.game.status = "finished"; this.game.phase = "游戏结束"; this.emit("结局", { winner: this.game.winner, roles: this.game.players.map(p => ({ seat: p.seat, role: p.role, persona: p.persona.name, agentId: p.agentId })) }, "omniscient"); this.settleWorld(); void this.reflectWorld(); }
   }
   private settleWorld() {
+    for (const player of this.game.players) {
+      const experience = extractExperience(this.game, this.store.events(this.game.id), player);
+      if (experience) this.store.saveExperience(experience);
+    }
     const roster = this.game.players.map(player => player.agentId ? this.store.worldAgent(player.agentId) : undefined).filter((x): x is WorldAgent => Boolean(x));
     if (!roster.length || !this.game.winner) return;
     this.emit("结局公告", { winner: this.game.winner, text: `${this.game.winner}阵营胜利，身份与夜间详情可切换到全知模式查看。` }, "public");
@@ -185,9 +193,20 @@ export class GameEngine {
   private async reflectWorld() {
     for (const player of this.game.players) {
       if (!player.agentId) continue;
-      const reflection = await this.decideFor(player, this.game.players.filter(p => p.seat !== player.seat).map(p => p.seat), `本局已经结束。请复盘自己的公开发言、投票和结果，提出下局可执行的改进。不要复述任何其他玩家的秘密信息。`);
-      const publicSummary = `${player.persona.name}完成赛后复盘：将更重视公开投票链与发言一致性。`;
-      this.store.addReflection({ agentId: player.agentId, gameId: this.game.id, privateSummary: reflection.text, publicSummary, createdAt: new Date().toISOString() });
+      const experience = extractExperience(this.game, this.store.events(this.game.id), player);
+      if (!experience) continue;
+      this.store.saveExperience(experience);
+      const allowed = Object.keys(LESSONS).filter(key => player.role === "狼人" || key !== "conceal");
+      const profile = this.profileFor(player)!; const started = Date.now();
+      try {
+        // A separate sanitized call: previous private prompts never enter reflection.
+        const reflection = await decide({ player, binding: profile, candidates: [player.seat], prompt: `赛后个人复盘。${summarizeExperience(experience)} 仅根据这些统计选出下一局最需改进的原则。action 必须为 ${allowed.join(",")}；原则：${JSON.stringify(LESSONS)}。target=${player.seat}。勿编造事件。` });
+        if (reflection.action && allowed.includes(reflection.action)) { experience.lesson = reflection.action as Lesson; experience.reviewed = true; }
+        this.store.logModelCall(this.game.id, player.agentId, profile, Date.now() - started, "reflection_ok");
+      } catch { this.store.logModelCall(this.game.id, player.agentId, profile, Date.now() - started, "reflection_failed"); }
+      this.store.saveExperience(experience);
+      const publicSummary = summarizeExperience(experience);
+      this.store.addReflection({ agentId: player.agentId, gameId: this.game.id, privateSummary: publicSummary, publicSummary, createdAt: new Date().toISOString() });
       this.store.saveSafeMemory(player.agentId, this.game.id, publicSummary);
     }
   }

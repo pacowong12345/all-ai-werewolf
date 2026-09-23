@@ -8,8 +8,21 @@ import { GameEngine } from "./game.js";
 import { ROLE_SLOTS, type Settings } from "./types.js";
 import { PROVIDERS } from "./providers.js";
 import type { AgentModelProfile } from "./types.js";
+import { extractExperience, summarizeExperience } from "./learning.js";
 
 const app = express(); const store = new LocalStore(); const games = new Map<string, GameEngine>();
+// Idempotent local backfill: completed results only; no paid model calls at startup.
+for (const game of store.games().filter(game => game.status === "finished")) {
+  const events = store.events(game.id);
+  for (const player of game.players) {
+    if (!player.agentId || store.experiences(player.agentId).some(x => x.gameId === game.id)) continue;
+    const experience = extractExperience(game, events, player);
+    if (experience) store.saveExperience(experience);
+  }
+}
+app.get("/api/learning", (_req, res) => res.json(store.worldAgents().map(agent => ({
+  id: agent.id, name: agent.name, experiences: store.experiences(agent.id).map(x => ({ ...x, summary: summarizeExperience(x) }))
+}))));
 app.use(cors()); app.use(express.json({ limit: "128kb" }));
 const binding = z.object({ provider: z.enum(["mock", "openai-compatible", "openai", "anthropic", "google", "deepseek", "ark", "qianfan", "dashscope", "zhipu", "moonshot", "hunyuan", "minimax"]), baseUrl: z.string().url().optional(), apiKey: z.string().max(500).optional(), model: z.string().min(1).max(160), profileId: z.string().optional() });
 const settingsSchema = z.object({ roleModels: z.record(z.string(), binding) });

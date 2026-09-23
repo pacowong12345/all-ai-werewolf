@@ -42,7 +42,7 @@ export async function decide(call: ModelCall): Promise<Decision> {
       const baseUrl = call.binding.baseUrl ?? preset.baseUrl;
       if (!baseUrl || !call.binding.apiKey) throw new Error("缺少模型地址或密钥");
       const response = await fetch(`${baseUrl.replace(/\/$/, "")}/chat/completions`, {
-        method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${call.binding.apiKey}` },
+        method: "POST", signal: AbortSignal.timeout(60000), headers: { "Content-Type": "application/json", Authorization: `Bearer ${call.binding.apiKey}` },
         body: JSON.stringify({ model: call.binding.model, temperature: 0.65, response_format: { type: "json_object" }, messages: [{ role: "system", content: systemPrompt }, { role: "user", content: call.prompt }] })
       });
       if (!response.ok) throw new Error(`模型请求失败 ${response.status}: ${(await response.text()).slice(0, 240)}`);

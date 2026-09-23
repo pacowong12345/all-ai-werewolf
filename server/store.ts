@@ -4,12 +4,21 @@ import { DatabaseSync } from "node:sqlite";
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import type { AgentModelProfile, AgentReflection, Chronicle, EventRecord, GameSnapshot, Guild, Relation, Settings, Visibility, WorldAgent } from "./types.js";
 import { GUILDS, seedAgents } from "./world.js";
+import type { Experience } from "./learning.js";
 
 export class LocalStore {
-  private dir = join(process.cwd(), "data");
+  experiences(agentId: string): Experience[] {
+    return (this.db.prepare("SELECT value FROM agent_experiences WHERE agent_id=? ORDER BY rowid DESC LIMIT 200").all(agentId) as {value:string}[]).map(row => JSON.parse(row.value));
+  }
+  saveExperience(value: Experience) {
+    this.db.prepare("INSERT INTO agent_experiences(agent_id,game_id,value) VALUES(?,?,?) ON CONFLICT(agent_id,game_id) DO UPDATE SET value=excluded.value").run(value.agentId, value.gameId, JSON.stringify(value));
+  }
+  close() { this.db.close(); }
+  private dir: string;
   private db: DatabaseSync;
   private key: Buffer;
-  constructor() {
+  constructor(directory = join(process.cwd(), "data")) {
+    this.dir = directory;
     mkdirSync(this.dir, { recursive: true });
     const keyPath = join(this.dir, ".settings-key");
     // Local key is intentionally outside SQLite; API keys are never returned by read endpoints.
@@ -33,7 +42,8 @@ export class LocalStore {
       CREATE TABLE IF NOT EXISTS agent_action_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, game_id TEXT NOT NULL, agent_id TEXT NOT NULL, phase TEXT NOT NULL, action TEXT NOT NULL, visibility TEXT NOT NULL, created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS model_call_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, game_id TEXT, agent_id TEXT, profile_id TEXT, provider TEXT NOT NULL, model TEXT NOT NULL, latency_ms INTEGER, status TEXT NOT NULL, created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS simulations (id TEXT PRIMARY KEY, value TEXT NOT NULL);`);
+      CREATE TABLE IF NOT EXISTS simulations (id TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS agent_experiences (agent_id TEXT NOT NULL, game_id TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(agent_id,game_id));`);
     if (Number((this.db.prepare("SELECT count(*) AS count FROM world_agents").get() as { count: number }).count) === 0) {
       for (const agent of seedAgents()) this.db.prepare("INSERT INTO world_agents(id,value) VALUES(?,?)").run(agent.id, JSON.stringify(agent));
       for (const guild of GUILDS) this.db.prepare("INSERT INTO guilds(id,value) VALUES(?,?)").run(guild.id, JSON.stringify(guild));
