@@ -16,6 +16,11 @@ export class GameEngine {
   readonly game: GameSnapshot;
   private listeners = new Set<(event: EventRecord) => void>();
   private stepping = false;
+  private runningLoop = false;
+  private elected = false;
+  private publishState() {
+    this.emit("公开状态", { phase: this.game.phase, day: this.game.day, status: this.game.status, sheriff: this.game.sheriff ?? null, winner: this.game.winner, players: this.game.players.map(p => ({ seat:p.seat, alive:p.alive })) });
+  }
   constructor(private store: LocalStore, private settings: Settings, id = randomUUID(), roster?: WorldAgent[], seed = Date.now()) {
     const selected = roster ? seededShuffle(roster, seed).slice(0, 12) : undefined;
     const slots = seededShuffle([...ROLE_SLOTS], seed + 19);
@@ -31,25 +36,25 @@ export class GameEngine {
   private save() { this.store.saveGame(this.game); }
   setSpeed(speed: number) { this.game.speed = Math.min(5, Math.max(0.25, speed)); this.save(); }
   pause() { this.game.status = "paused"; this.save(); this.emit("状态", { status: "paused" }); }
-  play() { if (this.game.status === "finished") return; this.game.status = "running"; this.save(); this.emit("状态", { status: "running" }); void this.run(); }
-  async step() { if (this.stepping || this.game.status === "finished") return; this.game.status = "paused"; await this.runPhase(); }
+  play() { if (this.game.status === "finished" || this.game.status === "error") return; this.game.status = "running"; this.save(); this.emit("状态", { status: "running" }); void this.run(); }
+  async step() { if (this.stepping || this.game.status === "finished" || this.game.status === "error") return; this.game.status = "paused"; await this.runPhase(); }
   private async wait() { await new Promise(resolve => setTimeout(resolve, 550 / this.game.speed)); }
-  private async run() { while (this.game.status === "running") { await this.runPhase(); if (this.game.status !== "running") break; await this.wait(); } }
+  private async run() { if(this.runningLoop) return; this.runningLoop=true; try { while (this.game.status === "running") { await this.runPhase(); if (this.game.status !== "running") break; await this.wait(); } } finally {this.runningLoop=false;} }
   private async runPhase() {
     if (this.stepping) return; this.stepping = true;
     try {
-      if (this.game.day === 0) await this.sheriffElection();
+      if (!this.elected) { await this.sheriffElection(); this.elected=true; }
       else if (this.game.phase === "夜晚结束") await this.dayDiscussion();
       else await this.night();
     } catch (error) { this.game.status = "error"; this.game.error = error instanceof Error ? error.message : "未知错误"; this.emit("错误", { message: this.game.error }); }
-    finally { this.save(); this.stepping = false; }
+    finally { this.save(); this.publishState(); this.stepping = false; }
   }
   private alive() { return this.game.players.filter(p => p.alive); }
   private async resolveSheriffBadge(deceased: Player) {
     if (this.game.sheriff !== deceased.seat) return;
     const candidates = this.alive().filter(player => player.seat !== deceased.seat).map(player => player.seat);
     if (!candidates.length) { delete this.game.sheriff; this.emit("撕毁警徽", { seat: deceased.seat, text: `${deceased.seat}号出局，警徽被撕毁。` }); return; }
-    const decision = await this.decideFor(deceased, candidates, "你是警长且即将出局。请决定警徽去向：action 只能为 transfer 或 destroy；transfer 时 target 为接任警长的座位，destroy 时撕毁警徽。");
+    const decision = await this.decideFor(deceased, candidates, "你是警长且即将出局。请决定警徽去向：action 只能为 transfer 或 destroy；transfer 时 target 为接任警长的座位，destroy 时撕毁警徽。", ["transfer","destroy"]);
     if (decision.action === "transfer") {
       this.game.sheriff = decision.target;
       this.emit("警徽移交", { from: deceased.seat, to: decision.target, text: `${deceased.seat}号将警徽移交给${decision.target}号。` });
@@ -62,12 +67,12 @@ export class GameEngine {
     if (cause === "女巫毒杀") return;
     const candidates = this.alive().filter(player => player.seat !== hunter.seat).map(player => player.seat);
     if (!candidates.length) return;
-    const decision = await this.decideFor(hunter, candidates, "你以猎人身份死亡，可发动开枪技能。action 只能为 shoot 或 skip；shoot 时 target 为要开枪带走的存活玩家。请谨慎决定。");
+    const decision = await this.decideFor(hunter, candidates, "你以猎人身份死亡，可发动开枪技能。action 只能为 shoot 或 skip；shoot 时 target 为要开枪带走的存活玩家。请谨慎决定。", ["shoot","skip"]);
     if (decision.action !== "shoot") { this.emit("猎人放弃开枪", { seat: hunter.seat }, "omniscient"); return; }
     const target = this.alive().find(player => player.seat === decision.target);
     if (!target) return;
     target.alive = false;
-    this.emit("猎人开枪", { seat: hunter.seat, target: target.seat }, "omniscient");
+    this.emit("猎人开枪", { seat: hunter.seat, target: target.seat }, "public");
     await this.resolveSheriffBadge(target);
   }
   private profileFor(player: Player): AgentModelProfile | undefined {
@@ -76,26 +81,37 @@ export class GameEngine {
     const fallback = this.settings.roleModels[player.slot] ?? defaultBinding;
     return { ...fallback, id: `legacy-${player.slot}`, agentId: player.agentId ?? "legacy", enabled: true, timeoutMs: 30000, maxRetries: 2, costLimit: 0 };
   }
-  private async decideFor(player: Player, candidates: number[], intent: string) {
+  private async decideFor(player: Player, candidates: number[], intent: string, actions?: string[]) {
+    const task = intent;
     const profile = this.profileFor(player); const started = Date.now();
     const experiences = player.agentId ? retrieveExperiences(this.store.experiences(player.agentId), player.agentId, this.game.id, player.role, intent) : [];
     const memory = experiences.map(summarizeExperience).join("\n");
     const agent = player.agentId ? this.store.worldAgent(player.agentId) : undefined;
-    intent = `你是本局${player.seat}号。存活座位：${this.alive().map(p => p.seat).join("、")}。当前警长：${this.game.sheriff ?? "无"}。你自己的当前判断（可修正）：${JSON.stringify(player.belief)}。个人策略参数：${JSON.stringify(agent?.strategy ?? {})}。\n${intent}`;
+    const checks = this.store.events(this.game.id).filter(e => e.type === "验人" && e.visibility === "private" && e.audience?.includes(player.seat));
+    intent = `你是本局${player.seat}号，身份${player.role}，目标为${player.role === "狼人" ? "狼人" : "好人"}阵营获胜。存活座位：${this.alive().map(p => p.seat).join("、")}。当前警长：${this.game.sheriff ?? "无"}。你自己的暂定判断：${JSON.stringify(player.belief)}。个人策略：${JSON.stringify(agent?.strategy ?? {})}。主持人确认的自身查验：${JSON.stringify(checks.map(e=>e.payload))}。真实查验优先于发言推测；你可公开报查杀和金水，无需为防泄密而隐瞒。\n${intent}`;
     const visible = this.store.events(this.game.id)
       .filter(event => visibleToPlayer(event, player, this.game.id))
       .filter((event, index, all) => event.visibility === "private" || index >= all.length - 36)
-      .map(event => `${event.type}: ${JSON.stringify(event.payload)}`)
+      .map(event => `${event.phase} · ${event.type}: ${JSON.stringify(event.payload)}`)
       .join("\n");
     const teammates = player.role === "狼人"
       ? `你的狼人同伴座位：${this.game.players.filter(p => p.role === "狼人" && p.seat !== player.seat).map(p => p.seat).join("、") || "无"}。`
       : "";
     intent = `${intent}\n候选目标必须从 [${candidates.join(",")}] 中选择，target 不得为 null。请说明具体理由，并引用可见的发言座位、投票、查验或行为证据。${teammates}\n你可见的近期记录：\n${visible || "暂无公开记录"}`;
-    try {
+    for(let attempt=0; attempt<3; attempt++) { try {
       const decision = await decide({ player, candidates, binding: profile!, prompt: `你的身份是${player.role}。人格表达：${player.persona.style}；风险偏好：${player.persona.risk}；信任方式：${player.persona.trust}；诈唬风格：${player.persona.bluff}。长期公开履历：${memory || "无"}。当前任务：${intent}。只根据你合法可见信息决定目标。不要复读其他玩家的原话或把多数人的重复当成事实；独立评估证据强度，并在公开发言中保留不确定性。` });
-      if (player.agentId) this.store.logAction(this.game.id, player.agentId, this.game.phase, `${intent}:${decision.target ?? "无目标"}`, "private");
+      if(!candidates.includes(decision.target)) throw new Error("必须选择合法候选目标");
+      if(actions && !actions.includes(decision.action ?? "")) throw new Error(`action必须为${actions.join("、")}`);
+      if(player.role === "预言家" && task.includes("投票放逐") && checks.some(e=>e.payload.target===decision.target && e.payload.result==="好人")) throw new Error("你正在投票放逐自己已经验明的好人，请依据真实查验修正目标");
+      if (player.agentId) this.store.logAction(this.game.id, player.agentId, this.game.phase, `${intent}\n模型决定：${JSON.stringify(decision)}`, "private");
       this.store.logModelCall(this.game.id, player.agentId, profile, Date.now() - started, "ok"); return decision;
-    } catch (error) { this.store.logModelCall(this.game.id, player.agentId, profile, Date.now() - started, "fallback"); return { text: "我会保留判断。", target: candidates[0], confidence: 0.3, suspects: [] }; }
+    } catch (error) {
+      this.store.logModelCall(this.game.id, player.agentId, profile, Date.now() - started, "retry");
+      this.emit("行动重试", {seat:player.seat, attempt:attempt+1, reason: error instanceof Error && /target=|必须选择|action必须|验明/.test(error.message) ? error.message : "供应商请求或输出格式未通过校验"}, "private", [player.seat]);
+      intent += `\n输出需要修正：${error instanceof Error ? error.message : "格式错误"}`;
+      if(attempt===2) throw new Error(`${player.seat}号模型连续三次未通过行动校验，对局已停止，不代投目标。`);
+    } }
+    throw new Error("没有模型决定");
   }
   private async sheriffElection() {
     this.game.phase = "警长竞选";
@@ -112,7 +128,7 @@ export class GameEngine {
     const sheriff = ranking.length && (!ranking[1] || ranking[0][1] > ranking[1][1]) ? ranking[0][0] : undefined;
     this.emit("警长投票", { votes, result: sheriff ? `${sheriff}号当选警长。` : "警长竞选平票，本局无警长。" });
     if (sheriff) { this.game.sheriff = sheriff; this.emit("警长", { seat: sheriff, text: `${sheriff}号当选警长，票重为 1.5。` }); }
-    this.game.day = 1; this.game.phase = "白天讨论";
+    this.game.day = 0; this.game.phase = "竞选结束";
   }
   private async night() {
     this.game.day += 1; this.game.phase = `第${this.game.day}夜`;
@@ -129,28 +145,31 @@ export class GameEngine {
       messages: wolfProposals.map((proposal, index) => ({ seat: wolves[index].seat, name: wolves[index].agentId ? this.store.worldAgent(wolves[index].agentId!)?.name : undefined, target: proposal.target, text: proposal.text })),
       target: victim?.seat,
     }, "wolves", wolves.map(w => w.seat));
-    const guard = alive.find(p => p.role === "守卫"); const guardDecision = guard ? await this.decideFor(guard, alive.filter(p => p.seat !== guard.lastGuardedSeat).map(p => p.seat), "选择今夜守护对象") : undefined; const guarded = guard && alive.find(p => p.seat === guardDecision?.target);
-    if (guard && guarded) { guard.lastGuardedSeat = guarded.seat; this.emit("守卫行动", { seat: guard.seat, target: guarded.seat }, "omniscient"); }
+    const guard = alive.find(p => p.role === "守卫"); const guardDecision = guard ? await this.decideFor(guard, alive.filter(p => p.seat !== guard.lastGuardedSeat).map(p => p.seat), `选择今夜守护对象。上晚守护${guard.lastGuardedSeat ?? "无人"}号，不能连续两晚守同一个人。${guard.lastGuardedSeat ? `本晚禁止选择${guard.lastGuardedSeat}号，即使他是预言家也不能守他。` : ""}`) : undefined; const guarded = guard && alive.find(p => p.seat === guardDecision?.target);
+    if (guard && guarded) { guard.lastGuardedSeat = guarded.seat; this.emit("守卫行动", { seat: guard.seat, target: guarded.seat }, "private", [guard.seat]); }
     const seer = alive.find(p => p.role === "预言家"); const seerDecision = seer ? await this.decideFor(seer, alive.filter(p => p.seat !== seer.seat).map(p => p.seat), "选择今夜查验对象") : undefined; const inspected = seer && alive.find(p => p.seat === seerDecision?.target);
     if (seer && inspected) this.emit("验人", { seat: seer.seat, target: inspected.seat, result: inspected.role === "狼人" ? "狼人" : "好人" }, "private", [seer.seat]);
     const witch = alive.find(p => p.role === "女巫");
     const witchCandidates = witch ? alive.filter(player => player.seat !== witch.seat).map(player => player.seat) : [];
-    const witchDecision = witch && witchCandidates.length ? await this.decideFor(witch, witchCandidates, `你是女巫。今晚狼人袭击${victim?.seat ?? "无人"}号。你有一瓶解药和一瓶毒药：action 只能为 save、poison 或 skip。save 只能救被袭击者，且不可自救；poison 时 target 为要毒杀的候选座位；skip 保留药水。`) : undefined;
+    const witchActions = ["skip", ...(!witch?.poisonUsed ? ["poison"] : []), ...(witch && !witch.antidoteUsed && victim && victim.seat!==witch.seat ? ["save"] : [])];
+    const witchDecision = witch && witchCandidates.length ? await this.decideFor(witch, witchCandidates, `女巫剩余解药${witch.antidoteUsed?0:1}瓶、毒药${witch.poisonUsed?0:1}瓶。${witch.antidoteUsed ? "解药已耗尽，不再得知刀口。" : `今晚刀口${victim?.seat ?? "无人"}号。`} action只能为${witchActions.join("、")}；save救刀口但不可自救，poison毒target，skip不用药。每晚最多一瓶。`, witchActions) : undefined;
     const saved = Boolean(witch && victim && victim.seat !== witch.seat && !witch.antidoteUsed && witchDecision?.action === "save");
     const poisoned = witch && !witch.poisonUsed && witchDecision?.action === "poison" ? alive.find(player => player.seat === witchDecision.target && player.seat !== witch.seat) : undefined;
-    if (witch && saved && victim) { witch.antidoteUsed = true; this.emit("女巫用药", { seat: witch.seat, action: "解药", target: victim.seat }, "omniscient"); }
-    if (witch && poisoned) { witch.poisonUsed = true; this.emit("女巫用药", { seat: witch.seat, action: "毒药", target: poisoned.seat }, "omniscient"); }
+    if (witch && saved && victim) { witch.antidoteUsed = true; this.emit("女巫用药", { seat: witch.seat, action: "解药", target: victim.seat }, "private", [witch.seat]); }
+    if (witch && poisoned) { witch.poisonUsed = true; this.emit("女巫用药", { seat: witch.seat, action: "毒药", target: poisoned.seat }, "private", [witch.seat]); }
     const deaths: Array<{ player: Player; cause: string }> = [];
     if (victim && guarded?.seat !== victim.seat && !saved) deaths.push({ player: victim, cause: "狼人袭击" });
-    if (poisoned && !deaths.some(death => death.player.seat === poisoned.seat)) deaths.push({ player: poisoned, cause: "女巫毒杀" });
-    for (const death of deaths) { death.player.alive = false; this.emit("夜晚死亡", { seat: death.player.seat, cause: death.cause }, "omniscient"); await this.resolveSheriffBadge(death.player); }
+    if (poisoned) { const existing=deaths.find(death=>death.player.seat===poisoned.seat); if(existing) existing.cause="女巫毒杀"; else deaths.push({player:poisoned,cause:"女巫毒杀"}); }
+    for (const death of deaths) { death.player.alive = false; this.emit("夜晚死亡", { seat: death.player.seat, cause: death.cause }, "omniscient"); }
+    this.emit("天亮公告", { seats: deaths.map(d=>d.player.seat), text: deaths.length ? `昨夜${deaths.map(d=>d.player.seat).join("、")}号倒牌。` : "昨夜平安夜。" });
+    for (const death of deaths) await this.resolveSheriffBadge(death.player);
     for (const death of deaths) if (death.player.role === "猎人") await this.resolveHunterShot(death.player, death.cause);
     this.game.phase = "夜晚结束"; this.checkWin();
   }
   private async dayDiscussion() {
     this.game.phase = `第${this.game.day}日讨论`;
     const deaths = this.store.events(this.game.id).filter(e => e.type === "夜晚死亡" && e.phase === `第${this.game.day}夜`);
-    this.emit("阶段", { title: this.game.phase, detail: deaths.length ? `昨夜 ${String(deaths[0].payload.seat)} 号倒牌。` : "昨夜平安夜。" });
+    this.emit("阶段", { title: this.game.phase, detail: deaths.length ? `昨夜 ${deaths.map(e=>String(e.payload.seat)).join("、")} 号倒牌。` : "昨夜平安夜。" });
     for (const player of this.alive()) {
       const candidates = this.alive().map(p => p.seat).filter(seat => seat !== player.seat);
       const decision = await this.decideFor(player, candidates, "发表公开短发言并给出暂定怀疑目标");
@@ -162,20 +181,20 @@ export class GameEngine {
     const totals = new Map<number, number>(); votes.forEach(v => totals.set(v.target ?? 0, (totals.get(v.target ?? 0) ?? 0) + v.weight)); const ranking = [...totals.entries()].sort((a, b) => b[1] - a[1]); const eliminated = ranking.length && (!ranking[1] || ranking[0][1] > ranking[1][1]) ? this.alive().find(p => p.seat === ranking[0][0]) : undefined;
     this.emit("投票", { target: eliminated?.seat, result: eliminated ? `${eliminated.seat}号被放逐。` : "平票，无人出局。", votes });
     if (eliminated) { eliminated.alive = false; this.emit("遗言", { seat: eliminated.seat, text: "请继续核对投票链，不要把我的出局当成结论。" }); await this.resolveSheriffBadge(eliminated); if (eliminated.role === "猎人") await this.resolveHunterShot(eliminated, "放逐"); }
-    this.checkWin(); this.game.phase = "白天结束";
+    this.checkWin(); if(this.game.status!=="finished") this.game.phase = "白天结束";
   }
   private checkWin() {
     const alive = this.alive(); const wolves = alive.filter(p => p.role === "狼人").length;
     if (wolves === 0 || wolves >= alive.length - wolves) { this.game.winner = wolves === 0 ? "好人" : "狼人"; this.game.status = "finished"; this.game.phase = "游戏结束"; this.emit("结局", { winner: this.game.winner, roles: this.game.players.map(p => ({ seat: p.seat, role: p.role, persona: p.persona.name, agentId: p.agentId })) }, "omniscient"); this.settleWorld(); void this.reflectWorld(); }
   }
   private settleWorld() {
+    this.emit("结局公告", { winner: this.game.winner, text: `${this.game.winner}阵营胜利，身份与夜间详情可切换到全知模式查看。` }, "public");
     for (const player of this.game.players) {
       const experience = extractExperience(this.game, this.store.events(this.game.id), player);
       if (experience) this.store.saveExperience(experience);
     }
     const roster = this.game.players.map(player => player.agentId ? this.store.worldAgent(player.agentId) : undefined).filter((x): x is WorldAgent => Boolean(x));
     if (!roster.length || !this.game.winner) return;
-    this.emit("结局公告", { winner: this.game.winner, text: `${this.game.winner}阵营胜利，身份与夜间详情可切换到全知模式查看。` }, "public");
     const wolfWin = this.game.winner === "狼人";
     const c = chronicle(this.game.id, this.game.winner, roster);
     const guildGains = new Map<string, number>();

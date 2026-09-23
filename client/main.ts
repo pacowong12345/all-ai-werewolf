@@ -3,6 +3,7 @@ import "./style.css";
 import "./learning.css";
 import "./wolf-chat.css";
 import { renderWolfChat, escapeHtml } from "./event-view";
+import { applyGameEvent } from "./game-events";
 
 function learningEscape(value:unknown) { return String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!)); }
 async function renderLearning() {
@@ -31,9 +32,12 @@ function renderHome() { app.innerHTML = `<main class="home"><header><span class=
 async function loadHistory() { const items = await api<Game[]>("/api/games"); const el = document.querySelector("#history")!; el.innerHTML = `<h3>历史对局</h3>${items.length ? items.map(x => `<button class="history" data-id="${x.id}"><b>${x.winner ? `${x.winner}胜利` : x.status}</b><span>${x.id.slice(0,8)} · 第${x.day}天</span></button>`).join("") : "<div class=\"muted\">暂无已保存对局</div>"}`; el.querySelectorAll<HTMLButtonElement>("[data-id]").forEach(b => b.addEventListener("click", () => void openGame(b.dataset.id!))); }
 async function start() { game = await api<Game>("/api/games", {method:"POST"}); events=[]; renderGame(); connect(); }
 async function openGame(id:string) { game=await api<Game>(`/api/games/${id}`); events=await api<Event[]>(`/api/games/${id}/events?mode=${omniscient?"omniscient":"public"}`); renderGame(); if (game.status === "running") connect(); }
-function connect() { stream?.close(); if (!game) return; stream = new EventSource(`/api/games/${game.id}/stream?mode=${omniscient?"omniscient":"public"}`); stream.onmessage = e => { const event = JSON.parse(e.data) as Event; events.push(event); if (event.type === "结局公告" && game) game = { ...game, status: "finished", winner: String(event.payload.winner ?? "") }; renderGame(); }; }
+function connect() { stream?.close(); if (!game) return; stream = new EventSource(`/api/games/${game.id}/stream?mode=${omniscient?"omniscient":"public"}`); stream.onmessage = e => { const event = JSON.parse(e.data) as Event; if(!events.some(x=>x.id===event.id)) events.push(event); if(game) game=applyGameEvent(game,event); renderGame(); }; }
 function details(e:Event) {
  const p=e.payload;
+ if(e.type==="公开状态") return `第${escapeHtml(p.day)}天 · ${escapeHtml(p.status)} · ${p.sheriff ? `警长 ${escapeHtml(p.sheriff)}号` : "无警长"}`;
+ if(e.type==="天亮公告") return escapeHtml(p.text);
+ if(e.type==="猎人开枪") return `${escapeHtml(p.seat)}号猎人开枪，带走${escapeHtml(p.target)}号。`;
  if(e.type==="狼人密聊") return renderWolfChat(p);
  if(e.type==="发言"||e.type==="遗言") return `<b>${escapeHtml(p.seat)}号</b> ${escapeHtml(p.text)}`;
  if(e.type==="投票"||e.type==="警长投票") { const votes = Array.isArray(p.votes) ? p.votes.map((vote:any) => `${escapeHtml(vote.seat)}号 → ${escapeHtml(vote.target ?? "弃权")}号${vote.weight === 1.5 ? "（警长1.5票）" : ""}`).join("<br>") : "票型记录不可用"; return `<b>${escapeHtml(p.result)}</b><br><span style="display:block;margin-top:8px;color:#c9c4df;line-height:1.7">${votes}</span>`; }
