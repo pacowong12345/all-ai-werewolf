@@ -37,6 +37,8 @@ export interface Player {
   alive: boolean;
   belief: Record<number, number>;
   lastGuardedSeat?: number;
+  antidoteUsed?: boolean;
+  poisonUsed?: boolean;
   agentId?: string;
   guildId?: string;
 }
