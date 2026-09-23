@@ -69,8 +69,12 @@ export async function decide(call: ModelCall): Promise<Decision> {
 }
 
 function mockDecision({ player, candidates, prompt }: ModelCall): Decision {
-  const target = candidates.find(seat => seat !== player.seat) ?? player.seat;
+  // Offline demo follows the same own-check constraint as live models.
+  const checks = JSON.parse(prompt.match(/主持人确认的自身查验：(\[[^\n]*?\])。/)?.[1] ?? '[]') as {target:number;result:string}[];
+  const eligible = player.role==='预言家' && prompt.includes('投票放逐') ? candidates.filter(seat=>!checks.some(c=>c.target===seat && c.result==='好人')) : candidates;
+  const target = eligible.find(seat => seat !== player.seat) ?? eligible[0] ?? candidates[0];
   const score = Number((0.51 + ((player.seat * 17 + target * 7) % 35) / 100).toFixed(2));
   const phrase = player.role === "狼人" ? "我更在意发言中的跳跃与跟票，不急着认定身份。" : "这轮信息有限，我会把口径和投票是否一致作为后续证据。";
-  return { text: `${player.persona.name}：${phrase} 我暂时关注${target}号。`, target, confidence: score, action: prompt.includes("transfer 或 destroy") ? "destroy" : "skip", suspects: [{ seat: target, score, reason: "发言与当前时间线存在待验证的断点" }] };
+  const action = prompt.includes('警长报名：action') ? (player.seat<=3?'run':'stay') : prompt.includes('action 为 continue') ? 'continue' : prompt.includes("transfer 或 destroy") ? "destroy" : "skip";
+  return { text: `${player.persona.name}：${phrase} 我暂时关注${target}号。`, target, confidence: score, action, suspects: [{ seat: target, score, reason: "发言与当前时间线存在待验证的断点" }] };
 }

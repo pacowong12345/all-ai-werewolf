@@ -45,6 +45,7 @@ export interface Player {
 
 export interface Persona { name: string; style: string; risk: string; trust: string; bluff: string; }
 export interface GameSnapshot {
+  ruleVersion?: string; rules?: string[]; winReason?: string;
   id: string; day: number; phase: string; status: "running" | "paused" | "finished" | "error";
   players: Player[]; sheriff?: number; winner?: "狼人" | "好人"; speed: number; error?: string; seed?: number; rosterIds?: string[]; seasonId?: string;
 }

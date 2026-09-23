@@ -6,11 +6,15 @@ import { renderWolfChat, escapeHtml } from "./event-view";
 import { applyGameEvent } from "./game-events";
 import { renderRecap } from "./recap";
 import "./recap.css";
+import { RULES, RULE_VERSION } from '../server/rules';
+function rulesPanel(rules=RULES, version=RULE_VERSION) { return `<details class="recap-panel"><summary>本局规则 · ${escapeHtml(version)}</summary><ul>${rules.map(r=>`<li>${escapeHtml(r)}</li>`).join('')}</ul></details>`; }
 let recapSelection='all', gameView='recap';
 function mountRecap() {
  const main=document.querySelector('main.game'); if(!main)return;
  main.setAttribute('data-view',gameView);
  const board=main.querySelector('.board')!;
+ board.insertAdjacentHTML('beforebegin',game.rules ? rulesPanel(game.rules,game.ruleVersion) : '<p class="muted">旧版对局：保留原规则与历史结算，不套用新版屠边规则。</p>');
+ if(game.winReason) board.insertAdjacentHTML('beforebegin',`<p class="recap-verdict">胜负原因：${escapeHtml(game.winReason)}</p>`);
  board.insertAdjacentHTML('beforebegin',`<div class="recap-view-tabs"><button id="view-recap" class="${gameView==='recap'?'primary':'ghost'}">结果回放</button><button id="view-discussion" class="${gameView==='discussion'?'primary':'ghost'}">完整发言</button></div>${renderRecap(events,omniscient,recapSelection)}`);
  document.querySelector('#view-recap')!.addEventListener('click',()=>{gameView='recap';renderGame();});
  document.querySelector('#view-discussion')!.addEventListener('click',()=>{gameView='discussion';renderGame();});
@@ -30,6 +34,7 @@ async function renderLearning() {
 new MutationObserver(() => {
   const header = document.querySelector('main.home header');
   if (header && !header.querySelector('#learning-link')) {
+    header.closest('main').querySelector('.hero').insertAdjacentHTML('afterend',rulesPanel());
     const button = document.createElement('button'); button.id='learning-link'; button.className='ghost'; button.textContent='个人经验库'; button.onclick=()=>void renderLearning(); header.append(button);
   }
 }).observe(document.documentElement,{childList:true,subtree:true});

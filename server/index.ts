@@ -1,4 +1,5 @@
 import express from "express";
+import { RULES, RULE_VERSION } from './rules.js';
 import cors from "cors";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -38,7 +39,7 @@ app.put("/api/agent-model-profiles/:agentId", (req, res) => { const parsed = pro
 app.post("/api/agent-model-profiles/import", (req, res) => { const rows = z.array(profileSchema).max(36).safeParse(req.body?.profiles); if (!rows.success) return res.status(400).json({ error: rows.error.flatten() }); for (const row of rows.data) if (store.worldAgent(row.agentId)) store.saveAgentProfile({ id: `profile-${row.agentId}`, ...row }); res.json({ imported: rows.data.length }); });
 app.post("/api/agent-model-profiles/:agentId/test", (req, res) => { const profile = store.agentProfile(req.params.agentId); if (!profile) return res.status(404).json({ error: "未配置人物模型" }); res.json({ ok: profile.provider === "mock" || Boolean(profile.apiKey), provider: profile.provider, model: profile.model, message: profile.provider === "mock" ? "离线演示模型可用" : "密钥已配置；首局调用时将执行真实连通性校验" }); });
 app.put("/api/settings", (req, res) => { const parsed = settingsSchema.safeParse(req.body); if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() }); store.saveSettings(parsed.data as Settings); res.json(redact(parsed.data as Settings)); });
-app.get("/api/rules", (_req, res) => res.json({ roles: ROLE_SLOTS, rules: ["守卫不可连续守同一人", "警长局女巫整局不可自救", "猎人被毒不能开枪", "平票无人出局", "警长票重 1.5", "狼人夜间私聊后共同选择目标"] }));
+app.get("/api/rules", (_req, res) => res.json({ roles: ROLE_SLOTS, version: RULE_VERSION, rules: RULES }));
 app.post("/api/models/test", (req, res) => { const parsed = binding.safeParse(req.body); if (!parsed.success) return res.status(400).json({ ok: false, error: "模型配置无效" }); res.json({ ok: true, message: parsed.data.provider === "mock" ? "离线演示模型可用" : "配置格式有效；实际连通性将在开局调用时验证" }); });
 app.post("/api/games", (req, res) => { const settings = store.settings() ?? { roleModels: Object.fromEntries(ROLE_SLOTS.map(slot => [slot, { provider: "mock", model: "offline-demo" }])) } as Settings; const seed = Number(req.body?.seed) || Date.now(); const game = new GameEngine(store, settings, undefined, store.worldAgents(), seed); games.set(game.game.id, game); game.play(); res.status(201).json(game.game); });
 app.get("/api/games", (_req, res) => res.json(store.games()));

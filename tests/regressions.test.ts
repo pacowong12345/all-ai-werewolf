@@ -16,7 +16,7 @@ it('预言家投已验好人会重试，改投由模型选择',async()=>{
 });
 it('夜晚双死全部公开且先死亡再移交；刀毒同中猎人不能开枪',async()=>{
  const {store,engine}=setup();const hunter=engine.game.players.find(p=>p.role==='猎人')!;const villager=engine.game.players.find(p=>p.role==='村民')!;engine.game.sheriff=hunter.seat;
- const spy=vi.spyOn(model,'decide').mockImplementation(async call=>({text:'测试',target:call.player.role==='女巫'?hunter.seat:call.player.role==='狼人'?hunter.seat:call.candidates.find(s=>s!==hunter.seat)!,confidence:.5,suspects:[],action:call.prompt.includes('transfer 或 destroy')?'destroy':call.player.role==='女巫'?'poison':'skip'}));
+ const spy=vi.spyOn(model,'decide').mockImplementation(async call=>({text:'测试',target:call.candidates.length===1?call.candidates[0]:call.player.role==='女巫'?hunter.seat:call.player.role==='狼人'?hunter.seat:call.candidates.find(s=>s!==hunter.seat)!,confidence:.5,suspects:[],action:call.prompt.includes('transfer 或 destroy')?'destroy':call.player.role==='女巫'?'poison':'skip'}));
  try {await (engine as any).night();const events=store.events(engine.game.id);expect(events.find(e=>e.type==='夜晚死亡')?.payload.cause).toBe('女巫毒杀');expect(events.some(e=>e.type==='猎人开枪')).toBe(false);expect(events.find(e=>e.type==='天亮公告')?.payload.seats).toContain(hunter.seat);
  }finally{spy.mockRestore();store.close();}
 });
@@ -27,7 +27,7 @@ it('女巫解药已用后提示不含刀口，不可再次救人',async()=>{
 });
 it('多死公告包含全部死者，开枪公开',async()=>{
  const {store,engine}=setup();const hunter=engine.game.players.find(p=>p.role==='猎人')!;const villagers=engine.game.players.filter(p=>p.role==='村民');
- const spy=vi.spyOn(model,'decide').mockImplementation(async call=>({text:'测试',target:call.player.role==='女巫'?villagers[1].seat:call.player.role==='狼人'?villagers[0].seat:call.player.role==='猎人'?villagers[2].seat:call.candidates.find(s=>s!==villagers[0].seat)!,confidence:.5,suspects:[],action:call.player.role==='女巫'?'poison':'shoot'}));
+ const spy=vi.spyOn(model,'decide').mockImplementation(async call=>({text:'测试',target:call.candidates.length===1?call.candidates[0]:call.player.role==='女巫'?villagers[1].seat:call.player.role==='狼人'?villagers[0].seat:call.player.role==='猎人'?villagers[2].seat:call.candidates.find(s=>s!==villagers[0].seat)!,confidence:.5,suspects:[],action:call.player.role==='女巫'?'poison':'shoot'}));
  try {await (engine as any).night();expect(store.events(engine.game.id).find(e=>e.type==='天亮公告')?.payload.seats).toEqual([villagers[0].seat,villagers[1].seat]);hunter.alive=false;await (engine as any).resolveHunterShot(hunter,'放逐');expect(store.events(engine.game.id).find(e=>e.type==='猎人开枪')?.visibility).toBe('public');}finally{spy.mockRestore();store.close();}
 });
 it('界面跟随公开事件刷新死亡、警徽和结束状态',()=>{

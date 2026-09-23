@@ -7,7 +7,7 @@ export function applyGameEvent(game: any, event: {type:string;phase:string;paylo
   if(event.type==='撕毁警徽') next.sheriff=undefined;
   const deaths=event.type==='天亮公告'?p.seats:event.type==='猎人开枪'?[p.target]:event.type==='投票'&&p.target?[p.target]:[];
   for(const seat of deaths??[]) {const player=next.players.find((x:any)=>x.seat===seat);if(player)player.alive=false;}
-  if(event.type==='结局公告') {next.status='finished';next.winner=p.winner;next.phase='游戏结束';}
+  if(event.type==='结局公告') {next.status='finished';next.winner=p.winner;next.winReason=p.reason;next.phase='游戏结束';}
   if(event.type==='状态') next.status=p.status;
   if(event.type==='错误') next.status='error';
   return next;

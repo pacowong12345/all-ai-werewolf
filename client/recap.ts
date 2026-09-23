@@ -31,6 +31,9 @@ function ballot(event:RecapEvent) {
 function roundCard(round:RecapRound, omniscient:boolean) {
   const night:string[]=[], day:string[]=[];
   for(const e of round.events) {const p=e.payload;
+    if(e.type==='警长报名') day.push(row('★','上警 / 投票资格',esc(p.text)));
+    if(e.type==='退水') day.push(row('☆','退水',seat(p.seat)));
+    if(e.type==='夜晚死亡' && omniscient) night.push(row('×',`${seat(p.seat)}倒牌`,esc(p.cause),'danger'));
     if(e.type==='狼人密聊') {const target=p.target??(typeof p.text==='string'?p.text.match(/最终夜袭\s*(\d+)\s*号/)?.[1]:undefined);night.push(row('☾','狼人刀口',seat(target),'danger'));}
     if(e.type==='守卫行动') night.push(row('◇',`守卫 ${seat(p.seat)}`,`守护 → ${seat(p.target)}`));
     if(e.type==='验人') night.push(row('◎',`预言家 ${seat(p.seat)}`,`查验 → ${seat(p.target)} · ${esc(p.result)}`));
