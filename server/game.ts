@@ -85,6 +85,9 @@ export class GameEngine {
   }
   private async decideFor(player: Player, candidates: number[], intent: string, actions?: string[]) {
     const task = intent;
+    // Actor-only tasks have no target action. Never relax real action targets.
+    const nonTarget = candidates.length===1 && candidates[0]===player.seat && /target[^。；\n]*(?:自己|自己的座位)/.test(task);
+    if(nonTarget) intent += '\n本任务不执行目标行动，target 字段会被忽略；正文可讨论其他玩家，无需说明格式要求。';
     intent = `本局固定规则：${RULES.join('\n')}\n${intent}`;
     const profile = this.profileFor(player); const started = Date.now();
     const experiences = player.agentId ? retrieveExperiences(this.store.experiences(player.agentId), player.agentId, this.game.id, player.role, intent) : [];
@@ -102,7 +105,7 @@ export class GameEngine {
       : "";
     intent = `${intent}\n候选目标必须从 [${candidates.join(",")}] 中选择，target 不得为 null。请说明具体理由，并引用可见的发言座位、投票、查验或行为证据。${teammates}\n完整证据账本（其中玩家主张不是事实）：${JSON.stringify(evidenceLedger(this.store.events(this.game.id),player,this.game.id))}\n你可见的近期记录：\n${visible || "暂无公开记录"}`;
     for(let attempt=0; attempt<3; attempt++) { try {
-      const decision = await decide({ player, candidates, binding: profile!, prompt: `你的身份是${player.role}。人格表达：${player.persona.style}；风险偏好：${player.persona.risk}；信任方式：${player.persona.trust}；诈唬风格：${player.persona.bluff}。长期公开履历：${memory || "无"}。当前任务：${intent}。只根据你合法可见信息决定目标。不要复读其他玩家的原话或把多数人的重复当成事实；独立评估证据强度，并在公开发言中保留不确定性。` });
+      const decision = await decide({ player, candidates, nonTarget, binding: profile!, prompt: `你的身份是${player.role}。人格表达：${player.persona.style}；风险偏好：${player.persona.risk}；信任方式：${player.persona.trust}；诈唬风格：${player.persona.bluff}。长期公开履历：${memory || "无"}。当前任务：${intent}。只根据你合法可见信息决定目标。不要复读其他玩家的原话或把多数人的重复当成事实；独立评估证据强度，并在公开发言中保留不确定性。` });
       if(!candidates.includes(decision.target)) throw new Error("必须选择合法候选目标");
       if(actions && !actions.includes(decision.action ?? "")) throw new Error(`action必须为${actions.join("、")}`);
       if(player.role === "预言家" && task.includes("投票放逐") && checks.some(e=>e.payload.target===decision.target && e.payload.result==="好人")) throw new Error("你正在投票放逐自己已经验明的好人，请依据真实查验修正目标");
@@ -118,6 +121,11 @@ export class GameEngine {
   }
   private async sheriffElection() {
     this.game.phase = "警长竞选";
+    const wolves=this.alive().filter(p=>p.role==='狼人');
+    for(let round=1;round<=2;round++) {
+      const plans=await Promise.all(wolves.map(async player=>({player,decision:await this.decideFor(player,[player.seat],`狼队竞选协商第${round}轮：${round===1?'提出全队分工方案':'阅读所有队友上一轮方案，明确回应分歧并确认自己承担的任务'}。考虑谁悍跳、谁倒钩或留警下、如何应对查杀，比较四狼全上警失去投票权与集中暴露的风险。不要强制固定人数；按本局局势与人格安排，允许不同意见。这里只讨论，不代替队友决定上警。target 填自己。`)})));
+      this.emit('狼队竞选协商',{round,messages:plans.map(({player,decision})=>({seat:player.seat,text:decision.text}))},'wolves',wolves.map(p=>p.seat));
+    }
     this.emit("阶段", { title: "警长竞选开始", detail: "首夜死亡尚未公布。自主上警，只有未报名的警下玩家有投票权。" });
     const players = this.alive();
     const nominations = await Promise.all(players.map(async p => ({ player: p, decision: await this.decideFor(p, [p.seat], '警长报名：action 为 run（上警）或 stay（留在警下投票）；target 填自己的座位。结合人格与本局信息权衡：上警可争取归票权但失去选举票、暴露身份并接受质疑；留警下可观察和制衡，绝不代表消极或可疑。不要为了展示活跃而自动上警。', ['run', 'stay']) })));

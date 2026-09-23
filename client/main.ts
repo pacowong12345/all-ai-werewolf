@@ -13,6 +13,7 @@ function mountRecap() {
  const main=document.querySelector('main.game'); if(!main)return;
  main.setAttribute('data-view',gameView);
  const board=main.querySelector('.board')!;
+ main.querySelector('header h1')?.insertAdjacentHTML('afterend',`<p class="eyebrow" title="${escapeHtml(game.id)}">局号 #${escapeHtml(game.id.slice(0,8).toUpperCase())}</p>`);
  board.insertAdjacentHTML('beforebegin',game.rules ? rulesPanel(game.rules,game.ruleVersion) : '<p class="muted">旧版对局：保留原规则与历史结算，不套用新版屠边规则。</p>');
  if(game.winReason) board.insertAdjacentHTML('beforebegin',`<p class="recap-verdict">胜负原因：${escapeHtml(game.winReason)}</p>`);
  board.insertAdjacentHTML('beforebegin',`<div class="recap-view-tabs"><button id="view-recap" class="${gameView==='recap'?'primary':'ghost'}">结果回放</button><button id="view-discussion" class="${gameView==='discussion'?'primary':'ghost'}">完整发言</button></div>${renderRecap(events,omniscient,recapSelection)}`);
@@ -46,7 +47,7 @@ const api = async <T>(url:string, init?:RequestInit) => { const r = await fetch(
 const app = document.querySelector<HTMLDivElement>("#app")!;
 
 function renderHome() { app.innerHTML = `<main class="home"><header><span class="moon">☾</span><div><h1>月下议会</h1><p>12 人 AI 狼人杀观战台</p></div><button id="settings" class="ghost">模型设置</button></header><section class="hero"><div><span class="eyebrow">标准 12 人玩家版型</span><h2>让 12 个独立人格，在谎言与推理中彼此博弈。</h2><p>4 狼人 · 预言家 · 女巫 · 猎人 · 守卫 · 4 村民</p><button id="start" class="primary">开始本局</button><small>默认使用离线演示模型；可在设置中接入 API。</small></div><aside><h3>本局规则</h3><ul><li>警长竞选与 1.5 票</li><li>遗言、狼人夜间密聊</li><li>守卫不可连守；女巫不可自救</li><li>无剧透与全知观战可切换</li></ul></aside></section><section id="history"><h3>历史对局</h3><div class="muted">正在读取记录…</div></section></main>`; document.querySelector("#start")!.addEventListener("click", start); document.querySelector("#settings")!.addEventListener("click", renderSettings); void loadHistory(); }
-async function loadHistory() { const items = await api<Game[]>("/api/games"); const el = document.querySelector("#history")!; el.innerHTML = `<h3>历史对局</h3>${items.length ? items.map(x => `<button class="history" data-id="${x.id}"><b>${x.winner ? `${x.winner}胜利` : x.status}</b><span>${x.id.slice(0,8)} · 第${x.day}天</span></button>`).join("") : "<div class=\"muted\">暂无已保存对局</div>"}`; el.querySelectorAll<HTMLButtonElement>("[data-id]").forEach(b => b.addEventListener("click", () => void openGame(b.dataset.id!))); }
+async function loadHistory() { const items = await api<Game[]>("/api/games"); const el = document.querySelector("#history")!; el.innerHTML = `<h3>历史对局</h3>${items.length ? items.map(x => `<button class="history" data-id="${x.id}" title="${escapeHtml(x.id)}"><b>局号 #${x.id.slice(0,8).toUpperCase()}</b><span>${x.winner ? `${x.winner}胜利` : x.status} · 第${x.day}天</span></button>`).join("") : "<div class=\"muted\">暂无已保存对局</div>"}`; el.querySelectorAll<HTMLButtonElement>("[data-id]").forEach(b => b.addEventListener("click", () => void openGame(b.dataset.id!))); }
 async function start() { game = await api<Game>("/api/games", {method:"POST"}); events=[]; renderGame(); connect(); }
 async function openGame(id:string) { stream?.close(); if(game?.id!==id)recapSelection='all'; game=await api<Game>(`/api/games/${id}`); events=await api<Event[]>(`/api/games/${id}/events?mode=${omniscient?"omniscient":"public"}`); renderGame(); if (game.status === "running") connect(); }
 function connect() { stream?.close(); if (!game) return; stream = new EventSource(`/api/games/${game.id}/stream?mode=${omniscient?"omniscient":"public"}`); stream.onmessage = e => { const event = JSON.parse(e.data) as Event; if(!events.some(x=>x.id===event.id)) events.push(event); if(game) game=applyGameEvent(game,event); renderGame(); }; }
@@ -55,7 +56,7 @@ function details(e:Event) {
  if(e.type==="公开状态") return `第${escapeHtml(p.day)}天 · ${escapeHtml(p.status)} · ${p.sheriff ? `警长 ${escapeHtml(p.sheriff)}号` : "无警长"}`;
  if(e.type==="天亮公告") return escapeHtml(p.text);
  if(e.type==="猎人开枪") return `${escapeHtml(p.seat)}号猎人开枪，带走${escapeHtml(p.target)}号。`;
- if(e.type==="狼人密聊"||e.type==="狼人提案") return renderWolfChat(p);
+ if(e.type==="狼人密聊"||e.type==="狼人提案"||e.type==="狼队竞选协商") return renderWolfChat(p);
  if(e.type==="发言"||e.type==="遗言"||e.type==="质询"||e.type==="答辩") return `<b>${escapeHtml(p.seat)}号${e.type==='质询'?` → ${escapeHtml(p.target)}号`:''}</b> ${escapeHtml(p.text)}`;
  if(e.type==="投票"||e.type==="警长投票") { const votes = Array.isArray(p.votes) ? p.votes.map((vote:any) => `${escapeHtml(vote.seat)}号 → ${escapeHtml(vote.target ?? "弃权")}号${vote.weight === 1.5 ? "（警长1.5票）" : ""}`).join("<br>") : "票型记录不可用"; return `<b>${escapeHtml(p.result)}</b><br><span style="display:block;margin-top:8px;color:#c9c4df;line-height:1.7">${votes}</span>`; }
  if(e.type==="阶段") return `<b>${escapeHtml(p.title)}</b><br><span>${escapeHtml(p.detail)}</span>`;

@@ -9,6 +9,19 @@ import {extractExperience,summarizeExperience} from '../server/learning.js';
 import * as model from '../server/model.js';
 import type {Settings} from '../server/types.js';
 function setup(){const store=new LocalStore(mkdtempSync(join(tmpdir(),'wolf-debate-')));const engine=new GameEngine(store,{roleModels:{}} as Settings,undefined,store.worldAgents(),123);(engine as any).wait=async()=>{};return {store,engine};}
+it('答辩填7号不执行目标动作；真实投票非法目标仍拒绝',()=>{
+ const content=JSON.stringify({text:'我怀疑7号',target:7,confidence:.6,suspects:[]});
+ expect(model.normalizeDecision(content,[12],true).text).toBe('我怀疑7号');
+ expect(model.normalizeDecision(content,[12],true).target).toBe(12);
+ expect(()=>model.normalizeDecision(content,[12])).toThrow('不合法');
+ expect(model.normalizeDecision(content,[7,8,9]).target).toBe(7);
+});
+it('答辩显式传递非目标模式，狼队竞选协商只对狼可见',async()=>{
+ const {store,engine}=setup();const original=model.decide;let flag=false;
+ const spy=vi.spyOn(model,'decide').mockImplementation(async c=>{if(c.prompt.includes('答辩测试')){flag=c.nonTarget===true;return model.normalizeDecision(JSON.stringify({text:'怀疑7号',target:7}),c.candidates,c.nonTarget);}return original(c);});
+ try{const p=engine.game.players[11];await (engine as any).decideFor(p,[p.seat],'答辩测试，target 填自己。');expect(flag).toBe(true);await (engine as any).sheriffElection();const es=store.events(engine.game.id);const plans=es.filter(e=>e.type==='狼队竞选协商');expect(plans).toHaveLength(2);expect(plans.every(e=>e.visibility==='wolves')).toBe(true);const villager=engine.game.players.find(p=>p.role==='村民')!;expect(JSON.stringify(evidenceLedger(es,villager,engine.game.id))).not.toContain('狼队竞选协商');expect(es.indexOf(plans[1])).toBeLessThan(es.findIndex(e=>e.type==='警长报名'));}
+ finally{spy.mockRestore();store.close();}
+});
 it('账本保留旧票型、区分主张，拒绝其他局和其他人的秘密',()=>{
  const {store,engine}=setup();const p=engine.game.players.find(p=>p.role==='村民')!;
  const add=(type:string,visibility:any,payload:any,audience?:number[],gameId=engine.game.id)=>store.addEvent({gameId,phase:'第1日讨论',type,visibility,payload,audience});
