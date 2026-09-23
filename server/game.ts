@@ -6,6 +6,7 @@ import { ROLE_SLOTS } from "./types.js";
 import type { LocalStore } from "./store.js";
 import { chronicle, relation, safeMemory, seededShuffle } from "./world.js";
 import type { WorldAgent } from "./types.js";
+import { visibleToPlayer } from "./visibility.js";
 import { LESSONS, extractExperience, retrieveExperiences, summarizeExperience, type Lesson } from "./learning.js";
 
 const roleOf = (slot: RoleSlot): Role => slot.startsWith("狼人") ? "狼人" : slot.startsWith("村民") ? "村民" : slot as Role;
@@ -82,9 +83,7 @@ export class GameEngine {
     const agent = player.agentId ? this.store.worldAgent(player.agentId) : undefined;
     intent = `你是本局${player.seat}号。存活座位：${this.alive().map(p => p.seat).join("、")}。当前警长：${this.game.sheriff ?? "无"}。你自己的当前判断（可修正）：${JSON.stringify(player.belief)}。个人策略参数：${JSON.stringify(agent?.strategy ?? {})}。\n${intent}`;
     const visible = this.store.events(this.game.id)
-      .filter(event => event.visibility === "public"
-        || (event.visibility === "private" && event.audience?.includes(player.seat))
-        || (event.visibility === "wolves" && player.role === "狼人"))
+      .filter(event => visibleToPlayer(event, player, this.game.id))
       .filter((event, index, all) => event.visibility === "private" || index >= all.length - 36)
       .map(event => `${event.type}: ${JSON.stringify(event.payload)}`)
       .join("\n");
@@ -126,7 +125,10 @@ export class GameEngine {
     wolfProposals.forEach(proposal => { if (proposal.target) wolfTotals.set(proposal.target, (wolfTotals.get(proposal.target) ?? 0) + 1); });
     const wolfTarget = [...wolfTotals.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? wolfCandidates[0];
     const victim = alive.find(p => p.seat === wolfTarget) ?? alive.find(p => p.role !== "狼人");
-    this.emit("狼人密聊", { seats: wolves.map(w => w.seat), text: `${wolfProposals.map((p, index) => `${wolves[index].seat}号提议${p.target}号：${p.text}`).join("\n")}\n最终夜袭 ${victim?.seat} 号。` }, "wolves", wolves.map(w => w.seat));
+    this.emit("狼人密聊", {
+      messages: wolfProposals.map((proposal, index) => ({ seat: wolves[index].seat, name: wolves[index].agentId ? this.store.worldAgent(wolves[index].agentId!)?.name : undefined, target: proposal.target, text: proposal.text })),
+      target: victim?.seat,
+    }, "wolves", wolves.map(w => w.seat));
     const guard = alive.find(p => p.role === "守卫"); const guardDecision = guard ? await this.decideFor(guard, alive.filter(p => p.seat !== guard.lastGuardedSeat).map(p => p.seat), "选择今夜守护对象") : undefined; const guarded = guard && alive.find(p => p.seat === guardDecision?.target);
     if (guard && guarded) { guard.lastGuardedSeat = guarded.seat; this.emit("守卫行动", { seat: guard.seat, target: guarded.seat }, "omniscient"); }
     const seer = alive.find(p => p.role === "预言家"); const seerDecision = seer ? await this.decideFor(seer, alive.filter(p => p.seat !== seer.seat).map(p => p.seat), "选择今夜查验对象") : undefined; const inspected = seer && alive.find(p => p.seat === seerDecision?.target);
