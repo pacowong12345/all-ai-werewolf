@@ -7,6 +7,7 @@ import type { LocalStore } from "./store.js";
 import { chronicle, relation, safeMemory, seededShuffle } from "./world.js";
 import type { WorldAgent } from "./types.js";
 import { visibleToPlayer } from "./visibility.js";
+import { evidenceLedger } from './evidence.js';
 import { RULES, RULE_VERSION, nightDeaths, victory } from './rules.js';
 import { LESSONS, extractExperience, retrieveExperiences, summarizeExperience, type Lesson } from "./learning.js";
 
@@ -99,7 +100,7 @@ export class GameEngine {
     const teammates = player.role === "狼人"
       ? `你的狼人同伴座位：${this.game.players.filter(p => p.role === "狼人" && p.seat !== player.seat).map(p => p.seat).join("、") || "无"}。`
       : "";
-    intent = `${intent}\n候选目标必须从 [${candidates.join(",")}] 中选择，target 不得为 null。请说明具体理由，并引用可见的发言座位、投票、查验或行为证据。${teammates}\n你可见的近期记录：\n${visible || "暂无公开记录"}`;
+    intent = `${intent}\n候选目标必须从 [${candidates.join(",")}] 中选择，target 不得为 null。请说明具体理由，并引用可见的发言座位、投票、查验或行为证据。${teammates}\n完整证据账本（其中玩家主张不是事实）：${JSON.stringify(evidenceLedger(this.store.events(this.game.id),player,this.game.id))}\n你可见的近期记录：\n${visible || "暂无公开记录"}`;
     for(let attempt=0; attempt<3; attempt++) { try {
       const decision = await decide({ player, candidates, binding: profile!, prompt: `你的身份是${player.role}。人格表达：${player.persona.style}；风险偏好：${player.persona.risk}；信任方式：${player.persona.trust}；诈唬风格：${player.persona.bluff}。长期公开履历：${memory || "无"}。当前任务：${intent}。只根据你合法可见信息决定目标。不要复读其他玩家的原话或把多数人的重复当成事实；独立评估证据强度，并在公开发言中保留不确定性。` });
       if(!candidates.includes(decision.target)) throw new Error("必须选择合法候选目标");
@@ -119,17 +120,20 @@ export class GameEngine {
     this.game.phase = "警长竞选";
     this.emit("阶段", { title: "警长竞选开始", detail: "首夜死亡尚未公布。自主上警，只有未报名的警下玩家有投票权。" });
     const players = this.alive();
-    const nominations = await Promise.all(players.map(async p => ({ player: p, decision: await this.decideFor(p, [p.seat], '警长报名：action 为 run（上警）或 stay（留在警下投票）；target 填自己的座位。', ['run', 'stay']) })));
+    const nominations = await Promise.all(players.map(async p => ({ player: p, decision: await this.decideFor(p, [p.seat], '警长报名：action 为 run（上警）或 stay（留在警下投票）；target 填自己的座位。结合人格与本局信息权衡：上警可争取归票权但失去选举票、暴露身份并接受质疑；留警下可观察和制衡，绝不代表消极或可疑。不要为了展示活跃而自动上警。', ['run', 'stay']) })));
     const nominated = nominations.filter(n => n.decision.action === 'run').map(n => n.player);
     const voters = players.filter(p => !nominated.includes(p));
     this.emit('警长报名', { candidates: nominated.map(p=>p.seat), voters: voters.map(p=>p.seat), text: `上警：${nominated.map(p=>p.seat).join('、') || '无'}；可投票：${voters.map(p=>p.seat).join('、') || '无'}。` });
     let candidates: Player[] = [];
     for (const player of nominated) {
-      const speech = await this.decideFor(player, [player.seat], '发表警长竞选发言。action 为 continue（继续竞选）或 withdraw（退水）；target 填自己。退水者仍不可投警长票。', ['continue', 'withdraw']);
+      const speech = await this.decideFor(player, [player.seat], '发表警长竞选发言；target 填自己。现在只发言，听完所有人后统一决定是否退水。说明自己相比其他候选人的具体优势，不复述他人整段发言。');
       this.emit('发言', { seat: player.seat, text: speech.text });
-      if (speech.action === 'continue') candidates.push(player);
-      else this.emit('退水', { seat: player.seat, text: `${player.seat}号退水，不参与警长投票。` });
       await this.wait();
+    }
+    const withdrawals=await Promise.all(nominated.map(async player=>({player,decision:await this.decideFor(player,[player.seat],'所有竞选发言已经结束。action 为 continue（继续竞选）或 withdraw（退水）；target 填自己。比较可信候选人的信息与自己的胜算，没有独立优势时可退水。退水者仍不可投警长票。',['continue','withdraw'])})));
+    for(const {player,decision} of withdrawals) {
+      if(decision.action==='continue') candidates.push(player);
+      else this.emit('退水',{seat:player.seat,text:`${player.seat}号退水：${decision.text}`});
     }
     let sheriff: number | undefined;
     if (!candidates.length || !voters.length) this.emit('警长投票', { votes: [], result: !candidates.length ? '无人继续竞选，本局无警长。' : '全部上警，无合资格投票者，本局无警长。' });
@@ -157,12 +161,17 @@ export class GameEngine {
     const wolves = alive.filter(p => p.role === "狼人");
     const wolfCandidates = alive.filter(p => p.role !== "狼人").map(p => p.seat);
     const wolfProposals = await Promise.all(wolves.map(wolf => this.decideFor(wolf, wolfCandidates, "在狼人夜聊中提出夜袭目标，并说服队友")));
+    this.emit('狼人提案',{messages:wolfProposals.map((p,i)=>({seat:wolves[i].seat,target:p.target,text:p.text}))},'wolves',wolves.map(w=>w.seat));
+    const finalProposals=await Promise.all(wolves.map(wolf=>this.decideFor(wolf,wolfCandidates,'狼人最终表决：阅读本夜所有队友提案，明确回应一条赞成或反对理由，再决定刀口。可以改变原提案，不要假装在公开发言。')));
     const wolfTotals = new Map<number, number>();
-    wolfProposals.forEach(proposal => { if (proposal.target) wolfTotals.set(proposal.target, (wolfTotals.get(proposal.target) ?? 0) + 1); });
-    const wolfTarget = [...wolfTotals.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? wolfCandidates[0];
+    finalProposals.forEach(proposal => { if (proposal.target) wolfTotals.set(proposal.target, (wolfTotals.get(proposal.target) ?? 0) + 1); });
+    const maximum=Math.max(...wolfTotals.values());
+    const tied=[...wolfTotals].filter(([,n])=>n===maximum).map(([s])=>s).sort((a,b)=>a-b);
+    const wolfTarget = seededShuffle(tied,(this.game.seed??0)+this.game.day*7919)[0];
     const victim = alive.find(p => p.seat === wolfTarget) ?? alive.find(p => p.role !== "狼人");
     this.emit("狼人密聊", {
-      messages: wolfProposals.map((proposal, index) => ({ seat: wolves[index].seat, name: wolves[index].agentId ? this.store.worldAgent(wolves[index].agentId!)?.name : undefined, target: proposal.target, text: proposal.text })),
+      messages: finalProposals.map((proposal, index) => ({ seat: wolves[index].seat, name: wolves[index].agentId ? this.store.worldAgent(wolves[index].agentId!)?.name : undefined, target: proposal.target, text: proposal.text })),
+      tied, resolution:tied.length>1?'最终表决平票，按本局种子抽签':'最终表决多数通过',
       target: victim?.seat,
     }, "wolves", wolves.map(w => w.seat));
     const guard = alive.find(p => p.role === "守卫"); const guardDecision = guard ? await this.decideFor(guard, alive.filter(p => p.seat !== guard.lastGuardedSeat).map(p => p.seat), `选择今夜守护对象。上晚守护${guard.lastGuardedSeat ?? "无人"}号，不能连续两晚守同一个人。${guard.lastGuardedSeat ? `本晚禁止选择${guard.lastGuardedSeat}号，即使他是预言家也不能守他。` : ""}`) : undefined; const guarded = guard && alive.find(p => p.seat === guardDecision?.target);
@@ -201,11 +210,25 @@ export class GameEngine {
       this.emit("判断摘要", { seat: player.seat, suspects: decision.suspects }, "omniscient");
       this.emit("发言", { seat: player.seat, text: decision.text }); await this.wait();
     }
-    const voters = this.alive(); const votes = await Promise.all(voters.map(async p => ({ seat: p.seat, target: (await this.decideFor(p, voters.filter(x => x.seat !== p.seat).map(x => x.seat), "投票放逐一名你认为最可疑的玩家")).target, weight: p.seat === this.game.sheriff ? 1.5 : 1 })));
+    await this.debate();
+    const voters = this.alive(); const votes = await Promise.all(voters.map(async p => ({ seat: p.seat, target: (await this.decideFor(p, voters.filter(x => x.seat !== p.seat).map(x => x.seat), "投票放逐一名你认为最可疑的玩家。先核对完整票型与质询答辩；如果改变先前目标，说明是哪条新证据导致改变。")).target, weight: p.seat === this.game.sheriff ? 1.5 : 1 })));
     const totals = new Map<number, number>(); votes.forEach(v => totals.set(v.target ?? 0, (totals.get(v.target ?? 0) ?? 0) + v.weight)); const ranking = [...totals.entries()].sort((a, b) => b[1] - a[1]); const eliminated = ranking.length && (!ranking[1] || ranking[0][1] > ranking[1][1]) ? this.alive().find(p => p.seat === ranking[0][0]) : undefined;
     this.emit("投票", { target: eliminated?.seat, result: eliminated ? `${eliminated.seat}号被放逐。` : "平票，无人出局。", votes });
     if (eliminated) { eliminated.alive = false; await this.lastWords(eliminated); await this.resolveSheriffBadge(eliminated); if (eliminated.role === "猎人") await this.resolveHunterShot(eliminated, "放逐"); }
     this.checkWin(); if(this.game.status!=="finished") this.game.phase = "白天结束";
+  }
+  private async debate() {
+    const players=this.alive();
+    this.emit('阶段',{title:'质询与答辩',detail:'每人最多提出一个问题，被质询者集中回应一次，再进行投票。'});
+    const questions=await Promise.all(players.map(async player=>({player,decision:await this.decideFor(player,players.filter(p=>p.seat!==player.seat).map(p=>p.seat),'质询轮：action 为 ask 或 skip。ask 时 target 是被质询者，text 只提出一个基于具体事件的可回答问题；不要复读指控。没有新问题可 skip。',['ask','skip'])})));
+    const asked=new Set<number>();
+    for(const {player,decision} of questions) if(decision.action==='ask') {
+      this.emit('质询',{seat:player.seat,target:decision.target,text:decision.text});asked.add(decision.target);
+    }
+    for(const player of players.filter(p=>asked.has(p.seat))) {
+      const answer=await this.decideFor(player,[player.seat],'答辩轮：集中回应本轮所有针对你的质询，承认口误或解释矛盾；用具体事件编号核对事实。target 填自己。');
+      this.emit('答辩',{seat:player.seat,text:answer.text});
+    }
   }
   private checkWin() {
     const result= victory(this.game.players);

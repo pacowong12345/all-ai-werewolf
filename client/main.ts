@@ -55,8 +55,8 @@ function details(e:Event) {
  if(e.type==="公开状态") return `第${escapeHtml(p.day)}天 · ${escapeHtml(p.status)} · ${p.sheriff ? `警长 ${escapeHtml(p.sheriff)}号` : "无警长"}`;
  if(e.type==="天亮公告") return escapeHtml(p.text);
  if(e.type==="猎人开枪") return `${escapeHtml(p.seat)}号猎人开枪，带走${escapeHtml(p.target)}号。`;
- if(e.type==="狼人密聊") return renderWolfChat(p);
- if(e.type==="发言"||e.type==="遗言") return `<b>${escapeHtml(p.seat)}号</b> ${escapeHtml(p.text)}`;
+ if(e.type==="狼人密聊"||e.type==="狼人提案") return renderWolfChat(p);
+ if(e.type==="发言"||e.type==="遗言"||e.type==="质询"||e.type==="答辩") return `<b>${escapeHtml(p.seat)}号${e.type==='质询'?` → ${escapeHtml(p.target)}号`:''}</b> ${escapeHtml(p.text)}`;
  if(e.type==="投票"||e.type==="警长投票") { const votes = Array.isArray(p.votes) ? p.votes.map((vote:any) => `${escapeHtml(vote.seat)}号 → ${escapeHtml(vote.target ?? "弃权")}号${vote.weight === 1.5 ? "（警长1.5票）" : ""}`).join("<br>") : "票型记录不可用"; return `<b>${escapeHtml(p.result)}</b><br><span style="display:block;margin-top:8px;color:#c9c4df;line-height:1.7">${votes}</span>`; }
  if(e.type==="阶段") return `<b>${escapeHtml(p.title)}</b><br><span>${escapeHtml(p.detail)}</span>`;
  if(e.type==="结局"||e.type==="结局公告") return `<b class="win">${escapeHtml(p.winner)}阵营胜利</b><br><span>${escapeHtml(p.text ?? "可切换全知模式查看身份揭示。")}</span>`;

@@ -1,8 +1,9 @@
 import type { Player } from './types.js';
 
-export const RULE_VERSION = '2026-09-23-v2';
+export const RULE_VERSION = '2026-09-24-v3';
 // This is the explicitly selected house ruleset, not a claim of a universal standard.
 export const RULES = [
+  '竞选发言全部结束后统一决定退水；白天发言后每人最多质询一次，被质询者集中答辩一次再投票。狼人先提案、再阅读队友意见并表决；最终平票按本局种子抽签。',
   '本版采用人数压制＋屠边：狼人全部出局则好人胜；否则神职全灭、村民全灭或狼人不少于好人数，任一条件成立则狼人胜。死亡技能结算完后判胜。',
   '流程：首夜行动 → 警长竞选 → 公布首夜死亡 → 白天讨论与放逐。首夜死者在公布前仍参与竞选。',
   '自主报名上警；仅未报名的警下玩家可投警长票。报名者不可投票，包括退水者。仅一位最终候选人直接当选，无候选人或全部上警则无警长。',
