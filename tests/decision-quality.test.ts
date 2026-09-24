@@ -23,6 +23,12 @@ it('保留计划与变更理由字段；竞选任务突出退水无票权',()=>{
  const d=normalizeDecision(JSON.stringify({text:'我选择上警，回应查杀压力。',target:1,plan:'留警下',planAction:'stay',revisionReason:'出现查杀，改变计划'}),[1]);
  expect(d.planAction).toBe('stay');expect(d.revisionReason).toContain('改变');expect(currentTaskRules('竞选')).toContain('退水也不能恢复');
 });
+it('女巫自身中刀时比较天毒与不用药，不预知守护也不强制毒',()=>{
+ const note=currentTaskRules('女巫剩余解药1瓶、毒药1瓶。今晚刀口4号。 action只能为skip、poison',4);
+ expect(note).toContain('永久无法使用');expect(note).toContain('你不知道守卫本夜目标');expect(note).toContain('允许基于信息不足选择skip');expect(note).toContain('不能等听完竞选再补毒');
+ expect(currentTaskRules('女巫剩余解药1瓶。今晚刀口3号。',4)).not.toContain('你本人是今晚刀口');
+ expect(currentTaskRules('女巫剩余解药0瓶，解药已耗尽，不再得知刀口。',4)).not.toContain('你本人是今晚刀口');
+});
 it('计划只给本人且不跨局；改计划必须说明原因并允许通过',async()=>{
  const store=new LocalStore(mkdtempSync(join(tmpdir(),'wolf-plan-')));const engine=new GameEngine(store,{roleModels:{}} as Settings);const p=engine.game.players[0];
  const response={text:'我选择留警下。',target:p.seat,confidence:.5,suspects:[],plan:'私人计划标记',planAction:'stay' as const};

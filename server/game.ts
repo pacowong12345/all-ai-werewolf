@@ -89,7 +89,7 @@ export class GameEngine {
   private async decideFor(player: Player, candidates: number[], intent: string, actions?: string[]) {
     const task = intent;
     const previousPlan=this.personalPlans.get(player.seat);
-    intent += `\n当前任务规则：${currentTaskRules(task)}\n自己的本局计划（可修订，不是事实）：${JSON.stringify(previousPlan??{})}。输出可增加 plan（160字内行动摘要，不要思维链）。狼队竞选协商时必须给 planAction=run 或 stay，表示你自己的报名计划，不替队友决定。报名若改变自己的 planAction，必须给 revisionReason（160字内简短原因）。非竞选任务不要填写 planAction。text 使用100—300字完整短发言，最多500字；只回应关键分歧，不复述整段历史。`;
+    intent += `\n当前任务规则：${currentTaskRules(task,player.seat)}\n自己的本局计划（可修订，不是事实）：${JSON.stringify(previousPlan??{})}。输出可增加 plan（160字内行动摘要，不要思维链）。狼队竞选协商时必须给 planAction=run 或 stay，表示你自己的报名计划，不替队友决定。报名若改变自己的 planAction，必须给 revisionReason（160字内简短原因）。非竞选任务不要填写 planAction。text 使用100—300字完整短发言，最多500字；只回应关键分歧，不复述整段历史。`;
     // Actor-only tasks have no target action. Never relax real action targets.
     const nonTarget = candidates.length===1 && candidates[0]===player.seat && /target[^。；\n]*(?:自己|自己的座位)/.test(task);
     if(nonTarget) intent += '\n本任务不执行目标行动，target 字段会被忽略；正文可讨论其他玩家，无需说明格式要求。';
