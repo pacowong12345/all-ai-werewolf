@@ -10,7 +10,8 @@ const DecisionSchema = z.object({
   action: z.string().max(32).optional(),
   plan: z.string().max(160).optional(),
   planAction: z.enum(['run','stay']).optional(),
-  revisionReason: z.string().max(160).optional()
+  revisionReason: z.string().max(160).optional(),
+  reviewVerdict:z.enum(['supported','speculative','unclear']).optional()
 });
 const LooseDecision = z.object({ text: z.unknown().optional(), target: z.unknown().optional(), confidence: z.unknown().optional(), suspects: z.unknown().optional(), action: z.unknown().optional() }).passthrough();
 export type Decision = z.infer<typeof DecisionSchema>;
@@ -36,7 +37,7 @@ export function normalizeDecision(content: string, candidates: number[], nonTarg
   if(!text) throw new Error('发言为空：请输出完整短发言。');
   if(text.length>500) throw new Error(`发言超长（${text.length}字）：请自行压缩为100—300字的完整短发言，最多500字，不要截断句子。`);
   const action = typeof raw.action === "string" ? raw.action.trim().toLowerCase().slice(0, 32) : undefined;
-  return DecisionSchema.parse({ text, target, confidence, suspects: suspects.length ? suspects : [{ seat: target, score: confidence, reason: "当前可见信息下的暂定判断" }], action, plan:raw.plan, planAction:raw.planAction, revisionReason:raw.revisionReason });
+  return DecisionSchema.parse({ text, target, confidence, suspects: suspects.length ? suspects : [{ seat: target, score: confidence, reason: "当前可见信息下的暂定判断" }], action, plan:raw.plan, planAction:raw.planAction, revisionReason:raw.revisionReason,reviewVerdict:raw.reviewVerdict });
 }
 
 export async function decide(call: ModelCall): Promise<Decision> {

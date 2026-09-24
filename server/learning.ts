@@ -14,6 +14,7 @@ export interface Experience {
   votes: number; correct: number; survived: boolean; lesson: Lesson;
   sourceEventIds: number[]; reviewed: boolean;
   reviewCases?: Array<{kind:string;count:number;lesson:Lesson}>;
+  decisionReview?: 'supported'|'speculative'|'unclear';
 }
 // Only aggregate outcomes persist: no dialogue, skill targets or teammates.
 export function extractExperience(game: GameSnapshot, events: EventRecord[], player: Player): Experience | undefined {
@@ -52,7 +53,8 @@ export function extractExperience(game: GameSnapshot, events: EventRecord[], pla
     sourceEventIds, reviewed: false };
 }
 export function summarizeExperience(x: Experience) {
-  return `历史复盘（不代表本局身份）：${x.won ? "获胜" : "失利"}；${x.votes}次公开放逐投票中${x.correct}次投向对立阵营。${(x.reviewCases??[]).map(c=>`${c.kind}${c.count}次；建议：${LESSONS[c.lesson]}`).join(' ')} ${LESSONS[x.lesson]} 样本有限，作为待验证经验，不把一次误判等同于策略错误。`;
+  const quality=x.decisionReview?`关键决策证据自评：${{supported:'有当时依据',speculative:'推测较多',unclear:'无法确定'}[x.decisionReview]}（模型自评，非裁判认证）。`:'';
+  return `历史复盘（不代表本局身份）：${x.won ? "获胜" : "失利"}；${x.votes}次公开放逐投票中${x.correct}次投向对立阵营。${quality}${(x.reviewCases??[]).map(c=>`${c.kind}${c.count}次；建议：${LESSONS[c.lesson]}`).join(' ')} ${LESSONS[x.lesson]} 样本有限，作为待验证经验，不把一次误判等同于策略错误。`;
 }
 export function retrieveExperiences(all: Experience[], agentId: string, gameId: string, role: Player["role"], task: string) {
   return all.filter(x => x.agentId === agentId && x.gameId !== gameId && (role === "狼人" ? x.role === "狼人" : x.role !== "狼人"))

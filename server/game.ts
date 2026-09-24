@@ -9,6 +9,7 @@ import type { WorldAgent } from "./types.js";
 import { visibleToPlayer } from "./visibility.js";
 import { evidenceLedger } from './evidence.js';
 import {currentTaskRules,validateActionText} from './decision-quality.js';
+import {strategyBrief,decisionKind,decisionContext,reviewDossier} from './intelligence.js';
 import { RULES, RULE_VERSION, nightDeaths, victory } from './rules.js';
 import { LESSONS, extractExperience, retrieveExperiences, summarizeExperience, type Lesson } from "./learning.js";
 
@@ -97,10 +98,12 @@ export class GameEngine {
     const experiences = player.agentId ? retrieveExperiences(this.store.experiences(player.agentId), player.agentId, this.game.id, player.role, intent) : [];
     const memory = experiences.map(summarizeExperience).join("\n");
     const agent = player.agentId ? this.store.worldAgent(player.agentId) : undefined;
+    intent += `\n${strategyBrief(player,agent?.strategy)}`;
     const checks = this.store.events(this.game.id).filter(e => e.type === "验人" && e.visibility === "private" && e.audience?.includes(player.seat));
     intent = `你是本局${player.seat}号，身份${player.role}，目标为${player.role === "狼人" ? "狼人" : "好人"}阵营获胜。存活座位：${this.alive().map(p => p.seat).join("、")}。当前警长：${this.game.sheriff ?? "无"}。你自己的暂定判断：${JSON.stringify(player.belief)}。个人策略：${JSON.stringify(agent?.strategy ?? {})}。主持人确认的自身查验：${JSON.stringify(checks.map(e=>e.payload))}。真实查验优先于发言推测；你可公开报查杀和金水，无需为防泄密而隐瞒。\n${intent}`;
     const visible = this.store.events(this.game.id)
       .filter(event => visibleToPlayer(event, player, this.game.id))
+      .filter(event => event.type !== '决策检查点')
       .filter((event, index, all) => event.visibility === "private" || index >= all.length - 36)
       .map(event => `${event.phase} · ${event.type}: ${JSON.stringify(event.payload)}`)
       .join("\n");
@@ -116,6 +119,8 @@ export class GameEngine {
       if(task.startsWith('狼队竞选协商') && !decision.planAction) throw new Error('计划变更校验：竞选协商必须给 planAction=run 或 stay，明确自己的报名计划。');
       if(task.includes('警长报名：') && previousPlan?.planAction && decision.action!==previousPlan.planAction && !decision.revisionReason?.trim()) throw new Error('计划变更缺少原因：报名决定与自己的竞选计划不同，请给 revisionReason 解释新依据，允许自主改计划。');
       if(player.role === "预言家" && task.includes("投票放逐") && checks.some(e=>e.payload.target===decision.target && e.payload.result==="好人")) throw new Error("你正在投票放逐自己已经验明的好人，请依据真实查验修正目标");
+      const kind=decisionKind(task);
+      if(kind)this.emit('决策检查点',{seat:player.seat,kind,task,candidates:[...candidates],decision:{target:decision.target,action:decision.action,confidence:decision.confidence,summary:decision.text},context:decisionContext(this.store.events(this.game.id),player,this.game.id)},'private',[player.seat]);
       if (player.agentId) this.store.logAction(this.game.id, player.agentId, this.game.phase, `${intent}\n模型决定：${JSON.stringify(decision)}`, "private");
       if(decision.plan || (task.includes('狼队竞选协商') && decision.planAction)) {
         const plan={gameId:this.game.id,plan:decision.plan??previousPlan?.plan,planAction:task.includes('狼队竞选协商')?decision.planAction??previousPlan?.planAction:previousPlan?.planAction};
@@ -270,7 +275,7 @@ export class GameEngine {
       const won = (player.role === "狼人") === wolfWin; const expected = 0.5; const actual = won ? 1 : 0;
       agent.elo = Math.round(agent.elo + 28 * (actual - expected)); agent.games++; if (won) { agent.wins++; guildGains.set(agent.guildId, (guildGains.get(agent.guildId) ?? 0) + 1); }
       agent.reputation += won ? 3 : 1; agent.contribution += won ? 2 : 0;
-      agent.strategy.risk = Math.max(0.2, Math.min(0.8, agent.strategy.risk + (won ? 0.015 : -0.008)));
+      // A win alone does not justify becoming more reckless; preserve preferences.
       if (agent.games >= 5 && agent.wins / agent.games > 0.65 && !agent.titles.includes("月下常胜者")) agent.titles.push("月下常胜者");
       this.store.saveWorldAgent(agent); this.store.saveSafeMemory(agent.id, this.game.id, safeMemory(agent, c));
     }
@@ -288,8 +293,9 @@ export class GameEngine {
       const profile = this.profileFor(player)!; const started = Date.now();
       try {
         // A separate sanitized call: previous private prompts never enter reflection.
-        const reflection = await decide({ player, binding: profile, candidates: [player.seat], prompt: `赛后个人复盘。${summarizeExperience(experience)} 仅根据这些统计选出下一局最需改进的原则。action 必须为 ${allowed.join(",")}；原则：${JSON.stringify(LESSONS)}。target=${player.seat}。勿编造事件。` });
+        const reflection = await decide({ player, binding: profile, candidates: [player.seat], nonTarget:true, prompt: `赛后个人复盘。先查看行动前截取的证据：${JSON.stringify(reviewDossier(this.store.events(this.game.id),player,this.game.id))}。只用各检查点当时的信息比较原选择与一个合法备选（允许不用技能），不要用后来揭晓的身份证明当时应该知道。再结合匿名结果统计：${summarizeExperience(experience)}。区分有依据的冒险失败与证据不足的误判，也不要把赢局当成正确推理。text给简短判断摘要而非思维链，不超过500字；reviewVerdict为supported/speculative/unclear，无检查点时用unclear。action 必须为 ${allowed.join(",")}；原则：${JSON.stringify(LESSONS)}。target=${player.seat}。自由文本只用于本次检查，不写入跨局记忆。` });
         if (reflection.action && allowed.includes(reflection.action)) { experience.lesson = reflection.action as Lesson; experience.reviewed = true; }
+        experience.decisionReview=reflection.reviewVerdict??'unclear';
         this.store.logModelCall(this.game.id, player.agentId, profile, Date.now() - started, "reflection_ok");
       } catch { this.store.logModelCall(this.game.id, player.agentId, profile, Date.now() - started, "reflection_failed"); }
       this.store.saveExperience(experience);

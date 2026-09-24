@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "evaluate": "node --import tsx server/evaluate-cli.ts",
     "dev": "tsx watch server/index.ts",
     "build": "vite build",
     "start": "node --import tsx server/index.ts",
