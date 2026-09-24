@@ -31,6 +31,7 @@ function ballot(event:RecapEvent) {
 function roundCard(round:RecapRound, omniscient:boolean) {
   const night:string[]=[], day:string[]=[];
   for(const e of round.events) {const p=e.payload;
+    if(e.type==='发言顺序') day.push(row('↻','本轮发言顺序',esc(p.text)));
     if(e.type==='警长报名') day.push(row('★','上警 / 投票资格',esc(p.text)));
     if(e.type==='退水') day.push(row('☆','退水',seat(p.seat)));
     if(e.type==='夜晚死亡' && omniscient) night.push(row('×',`${seat(p.seat)}倒牌`,esc(p.cause),'danger'));

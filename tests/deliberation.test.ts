@@ -46,9 +46,9 @@ it('所有竞选发言完成后才调用退水决定',async()=>{
  });
  try{await (engine as any).sheriffElection();expect(decisions).toBe(3);}finally{spy.mockRestore();store.close();}
 });
-it('质询先统一发布，被质询者集中答辩，不为每个问题重复调用',async()=>{
- const {store,engine}=setup();const spy=vi.spyOn(model,'decide').mockImplementation(async c=>({text:c.prompt.includes('答辩轮：')?'集中回答':'请解释你的票型',target:c.candidates[0],confidence:.5,suspects:[],action:'ask'}));
- try{await (engine as any).debate();const es=store.events(engine.game.id);expect(es.filter(e=>e.type==='质询')).toHaveLength(12);expect(es.filter(e=>e.type==='答辩')).toHaveLength(2);expect(es.findIndex(e=>e.type==='答辩')).toBeGreaterThan(es.map(e=>e.type).lastIndexOf('质询'));}
+it('白天只有一次轮流发言，无独立质询答辩，投票后才有出局遗言',async()=>{
+ const {store,engine}=setup();const spy=vi.spyOn(model,'decide').mockImplementation(async c=>({text:`${c.player.seat}号发言`,target:c.candidates[0],confidence:.5,suspects:[],action:'skip'}));
+ try{await (engine as any).dayDiscussion();const es=store.events(engine.game.id);expect(es.filter(e=>e.type==='发言')).toHaveLength(12);expect(es.some(e=>e.type==='质询'||e.type==='答辩')).toBe(false);expect(es.findIndex(e=>e.type==='投票')).toBeGreaterThan(es.map(e=>e.type).lastIndexOf('发言'));}
  finally{spy.mockRestore();store.close();}
 });
 it('个人误毒复盘只保留匿名计数，不保存夜间目标、原话或他人技能',()=>{
@@ -56,4 +56,15 @@ it('个人误毒复盘只保留匿名计数，不保存夜间目标、原话或�
  try{engine.game.status='finished';engine.game.winner='狼人';store.addEvent({gameId:engine.game.id,phase:'夜',type:'女巫用药',visibility:'private',audience:[witch.seat],payload:{seat:witch.seat,target:good.seat,action:'毒药',text:'NIGHT_SECRET'}});
  const x=extractExperience(engine.game,store.events(engine.game.id),witch)!;expect(x.reviewCases).toContainEqual({kind:'自身毒药误伤好人',count:1,lesson:'skills'});expect(summarizeExperience(x)).not.toMatch(/NIGHT_SECRET|号/);expect(extractExperience(engine.game,store.events(engine.game.id),good)?.reviewCases).toEqual([]);
  }finally{store.close();}
+});
+it.each(['right_last','left_first'])('警长选择%s后每人只发言一次，前置玩家看不到后置未来发言',async action=>{
+ const {store,engine}=setup();engine.game.sheriff=5;const speechCalls:any[]=[];
+ const spy=vi.spyOn(model,'decide').mockImplementation(async c=>{
+  if(c.prompt.includes('发表本轮唯一一次'))speechCalls.push(c);
+  return {text:`独特发言标记_${c.player.seat}_END`,target:c.candidates[0],confidence:.5,suspects:[],action};
+ });
+ try{await (engine as any).dayDiscussion();const es=store.events(engine.game.id);const order=es.find(e=>e.type==='发言顺序')!.payload.order as number[];
+ expect(action.endsWith('first')?order[0]:order.at(-1)).toBe(5);expect(es.filter(e=>e.type==='发言').map(e=>e.payload.seat)).toEqual(order);expect(new Set(order).size).toBe(12);
+ expect(speechCalls[0].prompt).not.toContain(`独特发言标记_${order.at(-1)}_END`);expect(speechCalls.at(-1).prompt).toContain(`独特发言标记_${order[0]}_END`);
+ }finally{spy.mockRestore();store.close();}
 });

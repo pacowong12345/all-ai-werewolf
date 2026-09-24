@@ -10,6 +10,7 @@ import { visibleToPlayer } from "./visibility.js";
 import { evidenceLedger } from './evidence.js';
 import {currentTaskRules,validateActionText} from './decision-quality.js';
 import {strategyBrief,decisionKind,decisionContext,reviewDossier} from './intelligence.js';
+import {automaticOrder,speakingOrder,mayGiveLastWords} from './speaking-order.js';
 import { RULES, RULE_VERSION, nightDeaths, victory } from './rules.js';
 import { LESSONS, extractExperience, retrieveExperiences, summarizeExperience, type Lesson } from "./learning.js";
 
@@ -217,7 +218,7 @@ export class GameEngine {
     this.emit("天亮公告", { seats: deaths.map(d=>d.player.seat), text: deaths.length ? `昨夜${deaths.map(d=>d.player.seat).join("、")}号倒牌。` : "昨夜平安夜。" });
     for (const death of deaths) await this.resolveSheriffBadge(death.player);
     for (const death of deaths) if (death.player.role === "猎人") await this.resolveHunterShot(death.player, death.cause);
-    if(this.game.day===1) for(const death of deaths) await this.lastWords(death.player);
+    for(const death of deaths) if(mayGiveLastWords(this.game.day,death.cause)) await this.lastWords(death.player);
     this.game.phase = "夜晚结束"; this.checkWin();
   }
   private async lastWords(player: Player) {
@@ -228,32 +229,36 @@ export class GameEngine {
     this.game.phase = `第${this.game.day}日讨论`;
     const deaths = this.store.events(this.game.id).filter(e => e.type === "夜晚死亡" && e.phase === `第${this.game.day}夜`);
     this.emit("阶段", { title: this.game.phase, detail: deaths.length ? `昨夜 ${deaths.map(e=>String(e.payload.seat)).join("、")} 号倒牌。` : "昨夜平安夜。" });
-    for (const player of this.alive()) {
+    const order=await this.selectSpeakingOrder();
+    for (const seat of order) {
+      const player=this.alive().find(p=>p.seat===seat)!;
       const candidates = this.alive().map(p => p.seat).filter(seat => seat !== player.seat);
-      const decision = await this.decideFor(player, candidates, "发表公开短发言并给出暂定怀疑目标");
+      const sheriffLast=player.seat===this.game.sheriff&&seat===order.at(-1);
+      const decision = await this.decideFor(player, candidates, `发表本轮唯一一次公开短发言并给出暂定怀疑目标。${sheriffLast?'你是最后发言的警长，请总结分歧并明确归票建议，其他玩家仍可自主投票。':'只回应已经发生的发言；后置位尚未发言不是嫌疑。'}本轮没有额外质询或答辩，先发言者之后只能听并自主投票，不能承诺稍后补充公开发言。`);
       player.belief[decision.target ?? candidates[0]] = decision.confidence;
       this.emit("判断摘要", { seat: player.seat, suspects: decision.suspects }, "omniscient");
-      this.emit("发言", { seat: player.seat, text: decision.text }); await this.wait();
+      this.emit("发言", { seat: player.seat, text: decision.text, sheriffFinal:sheriffLast }); await this.wait();
     }
-    await this.debate();
-    const voters = this.alive(); const votes = await Promise.all(voters.map(async p => ({ seat: p.seat, target: (await this.decideFor(p, voters.filter(x => x.seat !== p.seat).map(x => x.seat), "投票放逐一名你认为最可疑的玩家。先核对完整票型与质询答辩；如果改变先前目标，说明是哪条新证据导致改变。")).target, weight: p.seat === this.game.sheriff ? 1.5 : 1 })));
+    const voters = this.alive(); const votes = await Promise.all(voters.map(async p => ({ seat: p.seat, target: (await this.decideFor(p, voters.filter(x => x.seat !== p.seat).map(x => x.seat), "投票放逐一名你认为最可疑的玩家。全部单轮发言已经结束；核对完整票型及本轮发言，警长归票只是建议。如果改变自己先前的目标，说明是哪条新证据导致改变。现在没有再发言或等待答复的机会。")).target, weight: p.seat === this.game.sheriff ? 1.5 : 1 })));
     const totals = new Map<number, number>(); votes.forEach(v => totals.set(v.target ?? 0, (totals.get(v.target ?? 0) ?? 0) + v.weight)); const ranking = [...totals.entries()].sort((a, b) => b[1] - a[1]); const eliminated = ranking.length && (!ranking[1] || ranking[0][1] > ranking[1][1]) ? this.alive().find(p => p.seat === ranking[0][0]) : undefined;
     this.emit("投票", { target: eliminated?.seat, result: eliminated ? `${eliminated.seat}号被放逐。` : "平票，无人出局。", votes });
     if (eliminated) { eliminated.alive = false; await this.lastWords(eliminated); await this.resolveSheriffBadge(eliminated); if (eliminated.role === "猎人") await this.resolveHunterShot(eliminated, "放逐"); }
     this.checkWin(); if(this.game.status!=="finished") this.game.phase = "白天结束";
   }
-  private async debate() {
-    const players=this.alive();
-    this.emit('阶段',{title:'质询与答辩',detail:'每人最多提出一个问题，被质询者集中回应一次，再进行投票。'});
-    const questions=await Promise.all(players.map(async player=>({player,decision:await this.decideFor(player,players.filter(p=>p.seat!==player.seat).map(p=>p.seat),'质询轮：action 为 ask 或 skip。ask 时 target 是被质询者，text 只提出一个基于具体事件的可回答问题；不要复读指控。没有新问题可 skip。',['ask','skip'])})));
-    const asked=new Set<number>();
-    for(const {player,decision} of questions) if(decision.action==='ask') {
-      this.emit('质询',{seat:player.seat,target:decision.target,text:decision.text});asked.add(decision.target);
+  private async selectSpeakingOrder() {
+    const alive=this.alive().map(p=>p.seat);
+    const dawn=this.store.events(this.game.id).find(e=>e.type==='天亮公告'&&e.phase===`第${this.game.day}夜`);
+    const sheriff=this.alive().find(p=>p.seat===this.game.sheriff);
+    if(sheriff) {
+      const choice=await this.decideFor(sheriff,[sheriff.seat],'警长发言排序：action只能left_last、right_last、left_first、right_first。left为座位号递减，right递增，跳过死者。last从自己相邻存活者开始，自己最后一次发言归票；first自己抢先，然后沿所选方向轮转，不再追加归票发言。默认优先考虑last，但可自主抢先。这里只选择顺序，不公开额外策略发言。target 填自己。',['left_last','right_last','left_first','right_first']);
+      const direction=choice.action!.startsWith('left')?'left':'right';const first=choice.action!.endsWith('first');
+      const order=speakingOrder(alive,sheriff.seat,direction,sheriff.seat,first);
+      this.emit('发言顺序',{order,direction,anchor:sheriff.seat,sheriff:sheriff.seat,first,text:`警长${sheriff.seat}号选择${direction==='left'?'左侧（号数递减）':'右侧（号数递增）'}，${first?'警长抢先，本轮不追加发言':'警长最后归票'}。顺序：${order.join(' → ')}`});
+      return order;
     }
-    for(const player of players.filter(p=>asked.has(p.seat))) {
-      const answer=await this.decideFor(player,[player.seat],'答辩轮：集中回应本轮所有针对你的质询，承认口误或解释矛盾；用具体事件编号核对事实。target 填自己。');
-      this.emit('答辩',{seat:player.seat,text:answer.text});
-    }
+    const selected=automaticOrder(alive,(dawn?.payload.seats as number[]|undefined)??[],dawn?.createdAt??new Date().toISOString());
+    this.emit('发言顺序',{...selected,dawnTime:dawn?.createdAt,text:`无警长，天亮公告香港时间分钟数${selected.minute}，${selected.direction==='left'?'单数死左（号数递减）':'双数死右（号数递增）'}；${((dawn?.payload.seats as number[])??[]).length?`以夜间最小死者座位${selected.anchor}号为起点`:'平安夜从1号开始（已出局则按方向找下一存活者）'}。顺序：${selected.order.join(' → ')}`});
+    return selected.order;
   }
   private checkWin() {
     const result= victory(this.game.players);

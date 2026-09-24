@@ -81,6 +81,6 @@ function mockDecision({ player, candidates, prompt }: ModelCall): Decision {
   const target = eligible.find(seat => seat !== player.seat) ?? eligible[0] ?? candidates[0];
   const score = Number((0.51 + ((player.seat * 17 + target * 7) % 35) / 100).toFixed(2));
   const phrase = player.role === "狼人" ? "我更在意发言中的跳跃与跟票，不急着认定身份。" : "这轮信息有限，我会把口径和投票是否一致作为后续证据。";
-  const action = prompt.includes('警长报名：action') ? (player.seat<=3?'run':'stay') : prompt.includes('action 为 continue') ? 'continue' : prompt.includes("transfer 或 destroy") ? "destroy" : "skip";
+  const action = prompt.includes('警长发言排序：') ? 'right_last' : prompt.includes('警长报名：action') ? (player.seat<=3?'run':'stay') : prompt.includes('action 为 continue') ? 'continue' : prompt.includes("transfer 或 destroy") ? "destroy" : "skip";
   return { text: `${player.persona.name}：${phrase} 我暂时关注${target}号。`, target, confidence: score, action, planAction:player.seat<=3?'run':'stay', suspects: [{ seat: target, score, reason: "发言与当前时间线存在待验证的断点" }] };
 }

@@ -13,6 +13,8 @@ function mountRecap() {
  const main=document.querySelector('main.game'); if(!main)return;
  main.setAttribute('data-view',gameView);
  const board=main.querySelector('.board')!;
+ const speaking=events.filter(e=>e.type==='发言顺序').at(-1);
+ if(speaking) board.insertAdjacentHTML('beforebegin',`<p class="recap-verdict">${escapeHtml(speaking.phase)} · ${escapeHtml(speaking.payload.text)}</p>`);
  main.querySelector('header h1')?.insertAdjacentHTML('afterend',`<p class="eyebrow" title="${escapeHtml(game.id)}">局号 #${escapeHtml(game.id.slice(0,8).toUpperCase())}</p>`);
  board.insertAdjacentHTML('beforebegin',game.rules ? rulesPanel(game.rules,game.ruleVersion) : '<p class="muted">旧版对局：保留原规则与历史结算，不套用新版屠边规则。</p>');
  if(game.winReason) board.insertAdjacentHTML('beforebegin',`<p class="recap-verdict">胜负原因：${escapeHtml(game.winReason)}</p>`);
