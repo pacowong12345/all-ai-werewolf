@@ -263,7 +263,7 @@ export class GameEngine {
     const roster = this.game.players.map(player => player.agentId ? this.store.worldAgent(player.agentId) : undefined).filter((x): x is WorldAgent => Boolean(x));
     if (!roster.length || !this.game.winner) return;
     const wolfWin = this.game.winner === "狼人";
-    const c = chronicle(this.game.id, this.game.winner, roster);
+    const c = chronicle(this.game.id, this.game.winner, roster, this.store.events(this.game.id));
     const guildGains = new Map<string, number>();
     for (const player of this.game.players) {
       const agent = player.agentId ? this.store.worldAgent(player.agentId) : undefined; if (!agent) continue;
