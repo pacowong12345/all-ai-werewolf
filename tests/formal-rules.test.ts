@@ -36,13 +36,13 @@ it('上警与退水者不能投警长；警下票均为1，首轮平票后PK',as
  const spy=vi.spyOn(model,'decide').mockImplementation(async c=>{
   const nomination=c.prompt.includes('警长报名：action');const speech=c.prompt.includes('action 为 continue');const vote=c.prompt.includes('投票选出警长，');
   if(vote) ballotCalls++;
-  return {text:'独立决定',target:vote?(c.player.seat<9?1:2):c.candidates[0],confidence:.5,suspects:[],action:nomination?(c.player.seat<=4?'run':'stay'):speech?(c.player.seat<=2?'continue':'withdraw'):'skip'};
+  return {text:'独立决定',target:vote?(c.player.seat<9?1:2):c.candidates[0],confidence:.5,suspects:[],planAction:c.player.seat<=4?'run':'stay',action:nomination?(c.player.seat<=4?'run':'stay'):speech?(c.player.seat<=2?'continue':'withdraw'):'skip'};
  });
  try {await (engine as any).sheriffElection();const events=store.events(engine.game.id);const ballots=events.filter(e=>e.type==='警长投票');expect(ballots).toHaveLength(2);expect(ballotCalls).toBe(16);expect(engine.game.sheriff).toBeUndefined();for(const e of ballots){expect((e.payload.votes as any[]).map(v=>v.seat)).toEqual([5,6,7,8,9,10,11,12]);expect((e.payload.votes as any[]).every(v=>v.weight===1)).toBe(true);}}
  finally{spy.mockRestore();store.close();}
 });
 it.each(['run','stay'])('全部%s时无警长且不产生投票调用',async action=>{
- const {store,engine}=setup();const spy=vi.spyOn(model,'decide').mockImplementation(async c=>({text:'选择',target:c.candidates[0],confidence:.5,suspects:[],action:c.prompt.includes('警长报名：action')?action:'continue'}));
+ const {store,engine}=setup();const spy=vi.spyOn(model,'decide').mockImplementation(async c=>({text:'选择',target:c.candidates[0],confidence:.5,suspects:[],planAction:action as 'run'|'stay',action:c.prompt.includes('警长报名：action')?action:'continue'}));
  try{await (engine as any).sheriffElection();expect(engine.game.sheriff).toBeUndefined();expect(spy.mock.calls.some(([c])=>c.prompt.includes('投票选出警长，'))).toBe(false);}finally{spy.mockRestore();store.close();}
 });
 it('首夜先行动再竞选再公布死亡；完整假模型局使用新版规则且能够结束',async()=>{

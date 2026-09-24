@@ -8,6 +8,7 @@ import { chronicle, relation, safeMemory, seededShuffle } from "./world.js";
 import type { WorldAgent } from "./types.js";
 import { visibleToPlayer } from "./visibility.js";
 import { evidenceLedger } from './evidence.js';
+import {currentTaskRules,validateActionText} from './decision-quality.js';
 import { RULES, RULE_VERSION, nightDeaths, victory } from './rules.js';
 import { LESSONS, extractExperience, retrieveExperiences, summarizeExperience, type Lesson } from "./learning.js";
 
@@ -20,6 +21,7 @@ export class GameEngine {
   private stepping = false;
   private runningLoop = false;
   private elected = false;
+  private personalPlans = new Map<number,{gameId:string;plan?:string;planAction?:'run'|'stay'}>();
   private publishState() {
     this.emit("公开状态", { phase: this.game.phase, day: this.game.day, status: this.game.status, sheriff: this.game.sheriff ?? null, winner: this.game.winner, players: this.game.players.map(p => ({ seat:p.seat, alive:p.alive })) });
   }
@@ -85,6 +87,8 @@ export class GameEngine {
   }
   private async decideFor(player: Player, candidates: number[], intent: string, actions?: string[]) {
     const task = intent;
+    const previousPlan=this.personalPlans.get(player.seat);
+    intent += `\n当前任务规则：${currentTaskRules(task)}\n自己的本局计划（可修订，不是事实）：${JSON.stringify(previousPlan??{})}。输出可增加 plan（160字内行动摘要，不要思维链）。狼队竞选协商时必须给 planAction=run 或 stay，表示你自己的报名计划，不替队友决定。报名若改变自己的 planAction，必须给 revisionReason（160字内简短原因）。非竞选任务不要填写 planAction。text 使用100—300字完整短发言，最多500字；只回应关键分歧，不复述整段历史。`;
     // Actor-only tasks have no target action. Never relax real action targets.
     const nonTarget = candidates.length===1 && candidates[0]===player.seat && /target[^。；\n]*(?:自己|自己的座位)/.test(task);
     if(nonTarget) intent += '\n本任务不执行目标行动，target 字段会被忽略；正文可讨论其他玩家，无需说明格式要求。';
@@ -108,12 +112,20 @@ export class GameEngine {
       const decision = await decide({ player, candidates, nonTarget, binding: profile!, prompt: `你的身份是${player.role}。人格表达：${player.persona.style}；风险偏好：${player.persona.risk}；信任方式：${player.persona.trust}；诈唬风格：${player.persona.bluff}。长期公开履历：${memory || "无"}。当前任务：${intent}。只根据你合法可见信息决定目标。不要复读其他玩家的原话或把多数人的重复当成事实；独立评估证据强度，并在公开发言中保留不确定性。` });
       if(!candidates.includes(decision.target)) throw new Error("必须选择合法候选目标");
       if(actions && !actions.includes(decision.action ?? "")) throw new Error(`action必须为${actions.join("、")}`);
+      validateActionText(decision.action,decision.text);
+      if(task.startsWith('狼队竞选协商') && !decision.planAction) throw new Error('计划变更校验：竞选协商必须给 planAction=run 或 stay，明确自己的报名计划。');
+      if(task.includes('警长报名：') && previousPlan?.planAction && decision.action!==previousPlan.planAction && !decision.revisionReason?.trim()) throw new Error('计划变更缺少原因：报名决定与自己的竞选计划不同，请给 revisionReason 解释新依据，允许自主改计划。');
       if(player.role === "预言家" && task.includes("投票放逐") && checks.some(e=>e.payload.target===decision.target && e.payload.result==="好人")) throw new Error("你正在投票放逐自己已经验明的好人，请依据真实查验修正目标");
       if (player.agentId) this.store.logAction(this.game.id, player.agentId, this.game.phase, `${intent}\n模型决定：${JSON.stringify(decision)}`, "private");
+      if(decision.plan || (task.includes('狼队竞选协商') && decision.planAction)) {
+        const plan={gameId:this.game.id,plan:decision.plan??previousPlan?.plan,planAction:task.includes('狼队竞选协商')?decision.planAction??previousPlan?.planAction:previousPlan?.planAction};
+        this.personalPlans.set(player.seat,plan);
+        this.emit('个人计划',{seat:player.seat,...plan,revisionReason:decision.revisionReason},'private',[player.seat]);
+      }
       this.store.logModelCall(this.game.id, player.agentId, profile, Date.now() - started, "ok"); return decision;
     } catch (error) {
       this.store.logModelCall(this.game.id, player.agentId, profile, Date.now() - started, "retry");
-      this.emit("行动重试", {seat:player.seat, attempt:attempt+1, reason: error instanceof Error && /target=|必须选择|action必须|验明/.test(error.message) ? error.message : "供应商请求或输出格式未通过校验"}, "private", [player.seat]);
+      this.emit("行动重试", {seat:player.seat, attempt:attempt+1, reason: error instanceof Error && /target=|必须选择|action必须|验明|发言超长|发言为空|行动与发言矛盾|计划变更/.test(error.message) ? error.message : "供应商请求或输出格式未通过校验"}, "private", [player.seat]);
       intent += `\n输出需要修正：${error instanceof Error ? error.message : "格式错误"}`;
       if(attempt===2) throw new Error(`${player.seat}号模型连续三次未通过行动校验，对局已停止，不代投目标。`);
     } }

@@ -7,7 +7,10 @@ const DecisionSchema = z.object({
   target: z.number().int().min(1).max(12),
   confidence: z.number().min(0).max(1),
   suspects: z.array(z.object({ seat: z.number().int().min(1).max(12), score: z.number().min(0).max(1), reason: z.string().max(160) })).max(3),
-  action: z.string().max(32).optional()
+  action: z.string().max(32).optional(),
+  plan: z.string().max(160).optional(),
+  planAction: z.enum(['run','stay']).optional(),
+  revisionReason: z.string().max(160).optional()
 });
 const LooseDecision = z.object({ text: z.unknown().optional(), target: z.unknown().optional(), confidence: z.unknown().optional(), suspects: z.unknown().optional(), action: z.unknown().optional() }).passthrough();
 export type Decision = z.infer<typeof DecisionSchema>;
@@ -29,9 +32,11 @@ export function normalizeDecision(content: string, candidates: number[], nonTarg
     if (!candidates.includes(seat)) return [];
     return [{ seat, score: Number.isFinite(scoreValue) ? Math.max(0, Math.min(1, scoreValue)) : confidence, reason: String(value.reason ?? "基于当前可见信息的暂定判断").slice(0, 160) }];
   }).slice(0, 3) : [];
-  const text = String(raw.text ?? "").trim().slice(0, 500) || `我暂时关注${target}号，需要结合后续发言和票型验证。`;
+  const text = String(raw.text ?? "").trim();
+  if(!text) throw new Error('发言为空：请输出完整短发言。');
+  if(text.length>500) throw new Error(`发言超长（${text.length}字）：请自行压缩为100—300字的完整短发言，最多500字，不要截断句子。`);
   const action = typeof raw.action === "string" ? raw.action.trim().toLowerCase().slice(0, 32) : undefined;
-  return DecisionSchema.parse({ text, target, confidence, suspects: suspects.length ? suspects : [{ seat: target, score: confidence, reason: "当前可见信息下的暂定判断" }], action });
+  return DecisionSchema.parse({ text, target, confidence, suspects: suspects.length ? suspects : [{ seat: target, score: confidence, reason: "当前可见信息下的暂定判断" }], action, plan:raw.plan, planAction:raw.planAction, revisionReason:raw.revisionReason });
 }
 
 export async function decide(call: ModelCall): Promise<Decision> {
@@ -76,5 +81,5 @@ function mockDecision({ player, candidates, prompt }: ModelCall): Decision {
   const score = Number((0.51 + ((player.seat * 17 + target * 7) % 35) / 100).toFixed(2));
   const phrase = player.role === "狼人" ? "我更在意发言中的跳跃与跟票，不急着认定身份。" : "这轮信息有限，我会把口径和投票是否一致作为后续证据。";
   const action = prompt.includes('警长报名：action') ? (player.seat<=3?'run':'stay') : prompt.includes('action 为 continue') ? 'continue' : prompt.includes("transfer 或 destroy") ? "destroy" : "skip";
-  return { text: `${player.persona.name}：${phrase} 我暂时关注${target}号。`, target, confidence: score, action, suspects: [{ seat: target, score, reason: "发言与当前时间线存在待验证的断点" }] };
+  return { text: `${player.persona.name}：${phrase} 我暂时关注${target}号。`, target, confidence: score, action, planAction:player.seat<=3?'run':'stay', suspects: [{ seat: target, score, reason: "发言与当前时间线存在待验证的断点" }] };
 }
