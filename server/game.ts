@@ -22,6 +22,7 @@ export class GameEngine {
   private listeners = new Set<(event: EventRecord) => void>();
   private stepping = false;
   private runningLoop = false;
+  private pendingRetries = new Set<() => void>();
   private elected = false;
   private personalPlans = new Map<number,{gameId:string;plan?:string;planAction?:'run'|'stay'}>();
   private publishState() {
@@ -41,8 +42,18 @@ export class GameEngine {
   }
   private save() { this.store.saveGame(this.game); }
   setSpeed(speed: number) { this.game.speed = Math.min(5, Math.max(0.25, speed)); this.save(); }
-  pause() { this.game.status = "paused"; this.save(); this.emit("状态", { status: "paused" }); }
-  play() { if (this.game.status === "finished" || this.game.status === "error") return; this.game.status = "running"; this.save(); this.emit("状态", { status: "running" }); void this.run(); }
+  pause() { if (this.pendingRetries.size) return; this.game.status = "paused"; this.save(); this.emit("状态", { status: "paused" }); }
+  play() {
+    if (this.pendingRetries.size) {
+      const retries = [...this.pendingRetries]; this.pendingRetries.clear();
+      this.game.status = "running"; delete this.game.error; this.save();
+      this.emit("状态", { status: "running", message: "仅重试失败行动，已完成行动不重做。" });
+      retries.forEach(resume => resume()); return;
+    }
+    if (this.game.status === "error") throw new Error("此对局没有可恢复的现场。旧版本错误或服务重启后的对局无法直接续跑，请新开一局。");
+    if (this.game.status === "finished") return;
+    this.game.status = "running"; this.save(); this.emit("状态", { status: "running" }); void this.run();
+  }
   async step() { if (this.stepping || this.game.status === "finished" || this.game.status === "error") return; this.game.status = "paused"; await this.runPhase(); }
   private async wait() { await new Promise(resolve => setTimeout(resolve, 550 / this.game.speed)); }
   private async run() { if(this.runningLoop) return; this.runningLoop=true; try { while (this.game.status === "running") { await this.runPhase(); if (this.game.status !== "running") break; await this.wait(); } } finally {this.runningLoop=false;} }
@@ -112,8 +123,10 @@ export class GameEngine {
       ? `你的狼人同伴座位：${this.game.players.filter(p => p.role === "狼人" && p.seat !== player.seat).map(p => p.seat).join("、") || "无"}。`
       : "";
     intent = `${intent}\n候选目标必须从 [${candidates.join(",")}] 中选择，target 不得为 null。请说明具体理由，并引用可见的发言座位、投票、查验或行为证据。${teammates}\n完整证据账本（其中玩家主张不是事实）：${JSON.stringify(evidenceLedger(this.store.events(this.game.id),player,this.game.id))}\n你可见的近期记录：\n${visible || "暂无公开记录"}`;
+    let correction = '';
     for(let attempt=0; attempt<3; attempt++) { try {
-      const decision = await decide({ player, candidates, nonTarget, binding: profile!, prompt: `你的身份是${player.role}。人格表达：${player.persona.style}；风险偏好：${player.persona.risk}；信任方式：${player.persona.trust}；诈唬风格：${player.persona.bluff}。长期公开履历：${memory || "无"}。当前任务：${intent}。只根据你合法可见信息决定目标。不要复读其他玩家的原话或把多数人的重复当成事实；独立评估证据强度，并在公开发言中保留不确定性。` });
+      const taskReminder = `【当前行动优先】${task}\n合法target仅为[${candidates.join(',')}]。存活不等于本行动可选；不要把怀疑对象当成技能目标。${correction}\n`;
+      const decision = await decide({ player, candidates, nonTarget, binding: profile!, prompt: `${taskReminder}\n你的身份是${player.role}。人格表达：${player.persona.style}；风险偏好：${player.persona.risk}；信任方式：${player.persona.trust}；诈唬风格：${player.persona.bluff}。长期公开履历：${memory || "无"}。当前任务：${intent}。只根据你合法可见信息决定目标。不要复读其他玩家的原话或把多数人的重复当成事实；独立评估证据强度，并在公开发言中保留不确定性。\n${taskReminder}` });
       if(!candidates.includes(decision.target)) throw new Error("必须选择合法候选目标");
       if(actions && !actions.includes(decision.action ?? "")) throw new Error(`action必须为${actions.join("、")}`);
       validateActionText(decision.action,decision.text);
@@ -131,9 +144,19 @@ export class GameEngine {
       this.store.logModelCall(this.game.id, player.agentId, profile, Date.now() - started, "ok"); return decision;
     } catch (error) {
       this.store.logModelCall(this.game.id, player.agentId, profile, Date.now() - started, "retry");
-      this.emit("行动重试", {seat:player.seat, attempt:attempt+1, reason: error instanceof Error && /target=|必须选择|action必须|验明|发言超长|发言为空|行动与发言矛盾|计划变更/.test(error.message) ? error.message : "供应商请求或输出格式未通过校验"}, "private", [player.seat]);
-      intent += `\n输出需要修正：${error instanceof Error ? error.message : "格式错误"}`;
-      if(attempt===2) throw new Error(`${player.seat}号模型连续三次未通过行动校验，对局已停止，不代投目标。`);
+      const reason = error instanceof Error && /target=|必须选择|action必须|验明|发言超长|发言为空|行动与发言矛盾|计划变更/.test(error.message) ? error.message : "供应商请求或输出格式未通过校验";
+      const restriction = task.startsWith('选择今夜守护对象') ? `守卫不可连守：上一晚守${player.lastGuardedSeat ?? '无人'}号，本晚必须另选。` : '';
+      this.emit("行动重试", {seat:player.seat, attempt:attempt+1, reason: restriction + reason}, "private", [player.seat]);
+      correction = `上次输出被拒绝：${restriction}${reason}。请重新决定，不要重复非法输出。`;
+      if(attempt===2) {
+        await new Promise<void>(resolve => {
+          this.pendingRetries.add(resolve);
+          this.game.status = 'error';
+          this.game.error = '模型行动连续三次未通过校验，等待手动重试。全知模式可查看具体原因；服务重启后无法恢复现场。';
+          this.save(); this.emit('错误', {message:this.game.error}); this.publishState();
+        });
+        attempt = -1;
+      }
     } }
     throw new Error("没有模型决定");
   }
