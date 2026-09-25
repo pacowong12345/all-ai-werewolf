@@ -44,20 +44,22 @@ export async function decide(call: ModelCall): Promise<Decision> {
   const started = Date.now();
   try {
     const preset = provider(call.binding.provider);
+    const timeout = call.binding.timeoutMs ?? 60000;
+    const signal = () => AbortSignal.timeout(Math.max(1000, Math.min(120000, Number.isFinite(timeout) ? timeout : 60000)));
     if (preset.protocol === "openai") {
       const baseUrl = call.binding.baseUrl ?? preset.baseUrl;
       if (!baseUrl || !call.binding.apiKey) throw new Error("缺少模型地址或密钥");
       const response = await fetch(`${baseUrl.replace(/\/$/, "")}/chat/completions`, {
-        method: "POST", signal: AbortSignal.timeout(60000), headers: { "Content-Type": "application/json", Authorization: `Bearer ${call.binding.apiKey}` },
+        method: "POST", signal: signal(), headers: { "Content-Type": "application/json", Authorization: `Bearer ${call.binding.apiKey}` },
         body: JSON.stringify({ model: call.binding.model, temperature: 0.65, response_format: { type: "json_object" }, messages: [{ role: "system", content: systemPrompt }, { role: "user", content: call.prompt }] })
       });
-      if (!response.ok) throw new Error(`模型请求失败 ${response.status}: ${(await response.text()).slice(0, 240)}`);
+      if (!response.ok) throw new Error(`模型请求失败 HTTP ${response.status}`);
       const body = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
       return normalizeDecision(body.choices?.[0]?.message?.content ?? "{}", call.candidates, call.nonTarget);
     }
     if (call.binding.provider === "anthropic") {
       if (!call.binding.apiKey) throw new Error("缺少 Anthropic 密钥");
-      const response = await fetch("https://api.anthropic.com/v1/messages", { method: "POST", headers: { "Content-Type": "application/json", "x-api-key": call.binding.apiKey, "anthropic-version": "2023-06-01" }, body: JSON.stringify({ model: call.binding.model, max_tokens: 650, system: systemPrompt, messages: [{ role: "user", content: call.prompt }] }) });
+      const response = await fetch("https://api.anthropic.com/v1/messages", { method: "POST", signal: signal(), headers: { "Content-Type": "application/json", "x-api-key": call.binding.apiKey, "anthropic-version": "2023-06-01" }, body: JSON.stringify({ model: call.binding.model, max_tokens: 650, system: systemPrompt, messages: [{ role: "user", content: call.prompt }] }) });
       if (!response.ok) throw new Error(`Anthropic 请求失败 ${response.status}`);
       const body = await response.json() as { content?: Array<{ text?: string }> };
       return normalizeDecision(body.content?.[0]?.text ?? "{}", call.candidates, call.nonTarget);
@@ -65,7 +67,7 @@ export async function decide(call: ModelCall): Promise<Decision> {
     if (call.binding.provider === "google") {
       if (!call.binding.apiKey) throw new Error("缺少 Google 密钥");
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(call.binding.model)}:generateContent?key=${encodeURIComponent(call.binding.apiKey)}`;
-      const response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ generationConfig: { responseMimeType: "application/json", temperature: 0.65 }, contents: [{ parts: [{ text: `${systemPrompt}\n${call.prompt}` }] }] }) });
+      const response = await fetch(url, { method: "POST", signal: signal(), headers: { "Content-Type": "application/json" }, body: JSON.stringify({ generationConfig: { responseMimeType: "application/json", temperature: 0.65 }, contents: [{ parts: [{ text: `${systemPrompt}\n${call.prompt}` }] }] }) });
       if (!response.ok) throw new Error(`Google 请求失败 ${response.status}`);
       const body = await response.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
       return normalizeDecision(body.candidates?.[0]?.content?.parts?.[0]?.text ?? "{}", call.candidates, call.nonTarget);

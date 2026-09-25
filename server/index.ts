@@ -10,6 +10,7 @@ import { ROLE_SLOTS, type Settings } from "./types.js";
 import { PROVIDERS } from "./providers.js";
 import type { AgentModelProfile } from "./types.js";
 import { extractExperience, summarizeExperience } from "./learning.js";
+import {eventCursor,eventFrame} from './event-stream.js';
 
 const app = express(); const store = new LocalStore(); const games = new Map<string, GameEngine>();
 app.use((req,res,next)=>{if(!localRequestAllowed(req.headers.host,req.headers.origin))return res.status(403).json({error:'仅允许本地观战页面访问'});next();});
@@ -47,7 +48,17 @@ app.get("/api/games", (_req, res) => res.json(store.games()));
 app.get("/api/games/:id", (req, res) => { const game = games.get(req.params.id)?.game ?? store.game(req.params.id); if (!game) return res.sendStatus(404); res.json(game); });
 app.get("/api/games/:id/events", (req, res) => { const mode = req.query.mode === "omniscient" ? "omniscient" : "public"; res.json(store.events(req.params.id).map(event => eventFor(event, mode)).filter(Boolean)); });
 app.post("/api/games/:id/control", (req, res) => { const game = games.get(req.params.id); if (!game) return res.status(409).json({ error: "此记录没有可恢复的现场（旧版本或服务已重启），请新开一局。" }); const action = req.body?.action; try { if (action === "play") game.play(); else if (action === "pause") game.pause(); else if (action === "step") void game.step(); else if (action === "speed") game.setSpeed(Number(req.body.speed)); else return res.status(400).json({ error: "未知控制动作" }); res.json(game.game); } catch(error) { res.status(409).json({error:error instanceof Error?error.message:'无法恢复对局'}); } });
-app.get("/api/games/:id/stream", (req, res) => { const game = games.get(req.params.id); if (!game) return res.sendStatus(404); const mode = req.query.mode === "omniscient" ? "omniscient" : "public"; res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" }); const off = game.on(event => { const visible = eventFor(event, mode); if (visible) res.write(`data: ${JSON.stringify(visible)}\n\n`); }); req.on("close", off); });
+app.get("/api/games/:id/stream", (req, res) => {
+  const game = games.get(req.params.id); if (!game) return res.sendStatus(404);
+  const mode = req.query.mode === 'omniscient' ? 'omniscient' : 'public';
+  const after = eventCursor(req.headers['last-event-id'] ?? req.query.after);
+  res.writeHead(200, {'Content-Type':'text/event-stream','Cache-Control':'no-cache',Connection:'keep-alive'});
+  res.flushHeaders();
+  // Synchronous catch-up and subscription: no event can slip between these steps.
+  for (const event of store.events(req.params.id, after)) { const frame=eventFrame(event,mode); if(frame)res.write(frame); }
+  const off = game.on(event => { const frame=eventFrame(event,mode); if(frame)res.write(frame); });
+  req.on('close', off);
+});
 app.get("/api/world", (_req, res) => { const agents = store.worldAgents().sort((a, b) => b.elo - a.elo); res.json({ season: { name: "月下议会·第一季", mode: "手动开局 / 批量模拟" }, guilds: store.guilds(), agents, relations: store.relations(), chronicles: store.chronicles() }); });
 app.get("/api/world/agents/:id", (req, res) => { const agent = store.worldAgent(req.params.id); if (!agent) return res.sendStatus(404); res.json({ agent, memories: store.memories(agent.id), relations: store.relations().filter(x => x.fromId === agent.id || x.toId === agent.id) }); });
 app.get("/api/world/agents/:id/reflections", (req, res) => res.json(store.reflections(req.params.id).map(x => ({ ...x, privateSummary: undefined }))));

@@ -44,6 +44,7 @@ export class LocalStore {
       CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS simulations (id TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS agent_experiences (agent_id TEXT NOT NULL, game_id TEXT NOT NULL, value TEXT NOT NULL, PRIMARY KEY(agent_id,game_id));`);
+    this.db.exec('CREATE INDEX IF NOT EXISTS events_game_id_id ON events(game_id,id)');
     if (Number((this.db.prepare("SELECT count(*) AS count FROM world_agents").get() as { count: number }).count) === 0) {
       for (const agent of seedAgents()) this.db.prepare("INSERT INTO world_agents(id,value) VALUES(?,?)").run(agent.id, JSON.stringify(agent));
       for (const guild of GUILDS) this.db.prepare("INSERT INTO guilds(id,value) VALUES(?,?)").run(guild.id, JSON.stringify(guild));
@@ -52,7 +53,14 @@ export class LocalStore {
   private encrypt(value: string) { const iv = randomBytes(12), cipher = createCipheriv("aes-256-gcm", this.key, iv); const encrypted = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]); return [iv.toString("base64"), cipher.getAuthTag().toString("base64"), encrypted.toString("base64")].join("."); }
   private decrypt(value: string) { const [iv, tag, body] = value.split("."); const decipher = createDecipheriv("aes-256-gcm", this.key, Buffer.from(iv, "base64")); decipher.setAuthTag(Buffer.from(tag, "base64")); return Buffer.concat([decipher.update(Buffer.from(body, "base64")), decipher.final()]).toString("utf8"); }
   settings() { const row = this.db.prepare("SELECT value FROM settings WHERE id=1").get() as { value?: string } | undefined; if (!row?.value) return undefined; const decoded = JSON.parse(row.value) as Settings; for (const model of Object.values(decoded.roleModels)) if (model.apiKey) model.apiKey = this.decrypt(model.apiKey); return decoded; }
-  saveSettings(settings: Settings) { const copy = structuredClone(settings); for (const model of Object.values(copy.roleModels)) if (model.apiKey && model.apiKey !== "已配置") model.apiKey = this.encrypt(model.apiKey); this.db.prepare("INSERT OR REPLACE INTO settings(id,value) VALUES(1,?)").run(JSON.stringify(copy)); }
+  saveSettings(settings: Settings) {
+    const copy = structuredClone(settings), previous = this.settings();
+    for (const [slot, model] of Object.entries(copy.roleModels)) {
+      const key = model.apiKey && model.apiKey !== '已配置' ? model.apiKey : previous?.roleModels[slot as keyof Settings['roleModels']]?.apiKey;
+      model.apiKey = key ? this.encrypt(key) : undefined;
+    }
+    this.db.prepare("INSERT OR REPLACE INTO settings(id,value) VALUES(1,?)").run(JSON.stringify(copy));
+  }
   saveGame(game: GameSnapshot) { this.db.prepare("INSERT OR REPLACE INTO games(id,snapshot,updated_at) VALUES(?,?,?)").run(game.id, JSON.stringify(game), new Date().toISOString()); }
   game(id: string) { const row = this.db.prepare("SELECT snapshot FROM games WHERE id=?").get(id) as { snapshot?: string } | undefined; return row?.snapshot ? JSON.parse(row.snapshot) as GameSnapshot : undefined; }
   games() { return (this.db.prepare("SELECT snapshot FROM games ORDER BY updated_at DESC").all() as { snapshot: string }[]).map(row => JSON.parse(row.snapshot) as GameSnapshot); }
@@ -61,7 +69,7 @@ export class LocalStore {
     const result = this.db.prepare("INSERT INTO events(game_id,phase,type,visibility,audience,payload,created_at) VALUES(?,?,?,?,?,?,?)").run(event.gameId, event.phase, event.type, event.visibility, event.audience ? JSON.stringify(event.audience) : null, JSON.stringify(event.payload), createdAt);
     return { ...event, id: Number(result.lastInsertRowid), createdAt };
   }
-  events(gameId: string) { return (this.db.prepare("SELECT * FROM events WHERE game_id=? ORDER BY id").all(gameId) as Array<{ id: number; game_id: string; phase: string; type: string; visibility: Visibility; audience: string | null; payload: string; created_at: string }>).map(row => ({ id: row.id, gameId: row.game_id, phase: row.phase, type: row.type, visibility: row.visibility, audience: row.audience ? JSON.parse(row.audience) : undefined, payload: JSON.parse(row.payload), createdAt: row.created_at })); }
+  events(gameId: string, afterId = 0) { return (this.db.prepare("SELECT * FROM events WHERE game_id=? AND id>? ORDER BY id").all(gameId,afterId) as Array<{ id: number; game_id: string; phase: string; type: string; visibility: Visibility; audience: string | null; payload: string; created_at: string }>).map(row => ({ id: row.id, gameId: row.game_id, phase: row.phase, type: row.type, visibility: row.visibility, audience: row.audience ? JSON.parse(row.audience) : undefined, payload: JSON.parse(row.payload), createdAt: row.created_at })); }
   worldAgents() { return (this.db.prepare("SELECT value FROM world_agents").all() as { value: string }[]).map(x => JSON.parse(x.value) as WorldAgent); }
   worldAgent(id: string) { const row = this.db.prepare("SELECT value FROM world_agents WHERE id=?").get(id) as { value?: string } | undefined; return row?.value ? JSON.parse(row.value) as WorldAgent : undefined; }
   saveWorldAgent(agent: WorldAgent) { this.db.prepare("INSERT OR REPLACE INTO world_agents(id,value) VALUES(?,?)").run(agent.id, JSON.stringify(agent)); }
@@ -75,7 +83,12 @@ export class LocalStore {
   memories(agentId: string) { return (this.db.prepare("SELECT summary FROM memories WHERE agent_id=? ORDER BY rowid DESC LIMIT 8").all(agentId) as { summary: string }[]).map(x => x.summary); }
   agentProfile(agentId: string) { const row = this.db.prepare("SELECT value FROM agent_model_profiles WHERE agent_id=?").get(agentId) as { value?: string } | undefined; if (!row?.value) return undefined; const profile = JSON.parse(row.value) as AgentModelProfile; if (profile.apiKey) profile.apiKey = this.decrypt(profile.apiKey); return profile; }
   agentProfiles() { return this.worldAgents().map(agent => { const profile = this.agentProfile(agent.id); return profile ? { ...profile, apiKey: profile.apiKey ? "已配置" : undefined } : { id: `profile-${agent.id}`, agentId: agent.id, provider: "mock", model: "offline-demo", enabled: true, timeoutMs: 30000, maxRetries: 2, costLimit: 0 }; }); }
-  saveAgentProfile(profile: AgentModelProfile) { const copy = structuredClone(profile); if (copy.apiKey && copy.apiKey !== "已配置") copy.apiKey = this.encrypt(copy.apiKey); this.db.prepare("INSERT OR REPLACE INTO agent_model_profiles(agent_id,value) VALUES(?,?)").run(copy.agentId, JSON.stringify(copy)); }
+  saveAgentProfile(profile: AgentModelProfile) {
+    const copy = structuredClone(profile);
+    const key = copy.apiKey && copy.apiKey !== '已配置' ? copy.apiKey : this.agentProfile(copy.agentId)?.apiKey;
+    copy.apiKey = key ? this.encrypt(key) : undefined;
+    this.db.prepare("INSERT OR REPLACE INTO agent_model_profiles(agent_id,value) VALUES(?,?)").run(copy.agentId, JSON.stringify(copy));
+  }
   deleteAgentProfile(agentId: string) { this.db.prepare("DELETE FROM agent_model_profiles WHERE agent_id=?").run(agentId); }
   addReflection(value: AgentReflection) { this.db.prepare("INSERT OR REPLACE INTO agent_reflections(agent_id,game_id,value) VALUES(?,?,?)").run(value.agentId, value.gameId, JSON.stringify(value)); }
   reflections(agentId: string) { return (this.db.prepare("SELECT value FROM agent_reflections WHERE agent_id=? ORDER BY rowid DESC LIMIT 8").all(agentId) as { value: string }[]).map(x => JSON.parse(x.value) as AgentReflection); }

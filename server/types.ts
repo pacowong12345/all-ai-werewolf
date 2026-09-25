@@ -15,7 +15,7 @@ export interface EventRecord {
 }
 
 export type ProviderId = "mock" | "openai-compatible" | "openai" | "anthropic" | "google" | "deepseek" | "ark" | "qianfan" | "dashscope" | "zhipu" | "moonshot" | "hunyuan" | "minimax";
-export interface ModelBinding { provider: ProviderId; baseUrl?: string; apiKey?: string; model: string; profileId?: string; }
+export interface ModelBinding { provider: ProviderId; baseUrl?: string; apiKey?: string; model: string; profileId?: string; timeoutMs?: number; }
 export interface Settings { roleModels: Record<RoleSlot, ModelBinding>; }
 export interface AgentModelProfile extends ModelBinding { id: string; agentId: string; enabled: boolean; timeoutMs: number; maxRetries: number; costLimit: number; }
 export interface AgentReflection { agentId: string; gameId: string; privateSummary: string; publicSummary: string; createdAt: string; }
