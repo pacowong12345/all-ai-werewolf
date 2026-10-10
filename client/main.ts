@@ -9,6 +9,8 @@ import "./recap.css";
 import { RULES, RULE_VERSION } from '../server/rules';
 function rulesPanel(rules=RULES, version=RULE_VERSION) { return `<details class="recap-panel"><summary>本局规则 · ${escapeHtml(version)}</summary><ul>${rules.map(r=>`<li>${escapeHtml(r)}</li>`).join('')}</ul></details>`; }
 let recapSelection='all', gameView='recap';
+const remoteDemo=window.__REMOTE_DEMO__===true;
+const remoteHeaders=()=>remoteDemo?{'X-Remote-Action':'1'}:{};
 function mountRecap() {
  const main=document.querySelector('main.game'); if(!main)return;
  main.setAttribute('data-view',gameView);
@@ -45,16 +47,34 @@ new MutationObserver(() => {
 type Event = { id:number; type:string; phase:string; payload:Record<string, unknown>; visibility:string; createdAt:string };
 type Game = { id:string; day:number; phase:string; status:string; sheriff?:number; winner?:string; speed:number; players:Array<{seat:number; role:string; alive:boolean; persona:{name:string}}> };
 let game: Game | null = null, events: Event[] = [], omniscient = false, stream: EventSource | null = null;
-const api = async <T>(url:string, init?:RequestInit) => { const r = await fetch(url, init); if (!r.ok) throw new Error(await r.text()); return r.json() as Promise<T>; };
+const api = async <T>(url:string, init?:RequestInit) => { const r = await fetch(url, {...init,headers:{...remoteHeaders(),...init?.headers}}); if (!r.ok) {const body=await r.json().catch(()=>({}));throw new Error(body.error??'服务请求失败');} return r.json() as Promise<T>; };
 const app = document.querySelector<HTMLDivElement>("#app")!;
+if(remoteDemo){
+ const style=document.createElement('style');style.textContent='#settings,#agent-form>.primary{display:none!important}';document.head.append(style);
+ const banner=document.createElement('p');banner.className='recap-verdict';banner.textContent='平板远程展示 · 约2.5秒更新 · 配置仅能在电脑修改 · 新开局可能产生API费用';document.body.prepend(banner);
+}
 
 function renderHome() { app.innerHTML = `<main class="home"><header><span class="moon">☾</span><div><h1>月下议会</h1><p>12 人 AI 狼人杀观战台</p></div><button id="settings" class="ghost">模型设置</button></header><section class="hero"><div><span class="eyebrow">标准 12 人玩家版型</span><h2>让 12 个独立人格，在谎言与推理中彼此博弈。</h2><p>4 狼人 · 预言家 · 女巫 · 猎人 · 守卫 · 4 村民</p><button id="start" class="primary">开始本局</button><small>默认使用离线演示模型；可在设置中接入 API。</small></div><aside><h3>本局规则</h3><ul><li>警长竞选与 1.5 票</li><li>遗言、狼人夜间密聊</li><li>守卫不可连守；女巫不可自救</li><li>无剧透与全知观战可切换</li></ul></aside></section><section id="history"><h3>历史对局</h3><div class="muted">正在读取记录…</div></section></main>`; document.querySelector("#start")!.addEventListener("click", start); document.querySelector("#settings")!.addEventListener("click", renderSettings); void loadHistory(); }
 async function loadHistory() { const items = await api<Game[]>("/api/games"); const el = document.querySelector("#history"); if(!el)return; el.innerHTML = `<h3>历史对局</h3>${items.length ? items.map(x => `<button class="history" data-id="${x.id}" title="${escapeHtml(x.id)}"><b>局号 #${x.id.slice(0,8).toUpperCase()}</b><span>${x.winner ? `${x.winner}胜利` : x.status} · 第${x.day}天</span></button>`).join("") : "<div class=\"muted\">暂无已保存对局</div>"}`; el.querySelectorAll<HTMLButtonElement>("[data-id]").forEach(b => b.addEventListener("click", () => void openGame(b.dataset.id!))); }
 let starting=false;
-async function start() { if(starting)return; starting=true; try { game = await api<Game>("/api/games", {method:"POST"}); events=[]; renderGame(); connect(); } catch(error) {alert('开局失败，请检查本地服务。');} finally {starting=false;} }
+async function start() { if(starting)return; if(remoteDemo&&!confirm('开始真实对局会使用电脑上配置的模型，可能产生API费用。每次启动远程入口最多开3局，此限制不是费用预算。确定开始？'))return; starting=true; try { game = await api<Game>("/api/games", {method:"POST"}); events=[]; renderGame(); connect(); } catch(error) {alert(error.message??'开局失败，请检查本地服务。');} finally {starting=false;} }
 async function openGame(id:string) { stream?.close(); if(game?.id!==id)recapSelection='all'; game=await api<Game>(`/api/games/${id}`); events=await api<Event[]>(`/api/games/${id}/events?mode=${omniscient?"omniscient":"public"}`); renderGame(); if (game.status === "running") connect(); }
 function connect() {
  stream?.close(); if (!game) return;
+ if(remoteDemo){
+  const id=game.id,mode=omniscient?'omniscient':'public';let closed=false,timer;
+  const subscription={close(){closed=true;clearTimeout(timer);}};stream=subscription;
+  const poll=async()=>{
+   try{
+    const incoming=await api<Event[]>(`/api/games/${id}/events?mode=${mode}&after=${events.at(-1)?.id??0}`);
+    if(closed||stream!==subscription||game?.id!==id)return;
+    const seen=new Set(events.map(e=>e.id));
+    for(const event of incoming)if(!seen.has(event.id)){seen.add(event.id);events.push(event);game=applyGameEvent(game,event);}
+    if(incoming.length)renderGame();
+   }catch{if(!closed){const status=document.querySelector('.status');if(status)status.textContent='连接暂时中断，正在重试…';}}
+   finally{if(!closed&&game?.status!=='finished')timer=setTimeout(poll,2500);}
+  };void poll();return;
+ }
  const id=game.id, seen=new Set(events.map(e=>e.id));
  const after=events.at(-1)?.id??0;
  const source=new EventSource(`/api/games/${id}/stream?mode=${omniscient?"omniscient":"public"}&after=${after}`); stream=source;
@@ -89,7 +109,7 @@ function renderGame() { if(!game) return; const visibleEvents = events.slice(-80
    document.querySelector('.controls')!.after(notice);
  }
  document.querySelector("#back")!.addEventListener("click",()=>{stream?.close();renderHome();}); document.querySelector("#mode")!.addEventListener("change", e=>{omniscient=(e.target as HTMLInputElement).checked; if(game) void openGame(game.id);}); document.querySelector("#play")!.addEventListener("click",()=>void control(game!.status==="running"?"pause":"play")); document.querySelector("#step")!.addEventListener("click",()=>void control("step")); document.querySelector("#speed")!.addEventListener("change",e=>void control("speed", Number((e.target as HTMLSelectElement).value))); }
-async function control(action:string,speed?:number) { if(!game)return; try { const response=await fetch(`/api/games/${game.id}/control`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action,speed})}); const body=await response.json(); if(!response.ok)throw new Error(body.error??'控制失败'); game=body; renderGame(); if(action==='play'||action==='step')connect(); } catch(error) { alert(error instanceof Error?error.message:'控制失败'); } }
+async function control(action:string,speed?:number) { if(!game)return; try { const response=await fetch(`/api/games/${game.id}/control`,{method:"POST",headers:{"Content-Type":"application/json",...remoteHeaders()},body:JSON.stringify({action,speed})}); const body=await response.json(); if(!response.ok)throw new Error(body.error??'控制失败'); game=body; renderGame(); if(action==='play'||action==='step')connect(); } catch(error) { alert(error instanceof Error?error.message:'控制失败'); } }
 function renderWorld() { void api<{season:{name:string};guilds:Array<{id:string;name:string;motto:string;score:number;color:string}>;agents:Array<{id:string;name:string;guildId:string;elo:number;reputation:number;games:number;wins:number;titles:string[]}>;chronicles:Array<{title:string;summary:string;highlights:string[]}>}>("/api/world").then(world => {
   app.innerHTML = `<main class="world"><header><button id="back" class="ghost">← 返回</button><div><span class="eyebrow">${world.season.name}</span><h1>月下议会 · 势力档案</h1></div></header><section class="guilds">${world.guilds.map(g=>`<article style="--guild:${g.color}"><b>${g.name}</b><span>${g.motto}</span><em>议席 ${g.score}</em></article>`).join("")}</section><section class="world-grid"><div><h2>议会榜</h2><table><thead><tr><th>排名</th><th>行者</th><th>公会</th><th>Elo</th><th>胜率</th></tr></thead><tbody>${world.agents.slice(0,18).map((a,i)=>`<tr data-agent="${a.id}"><td>${i+1}</td><td>${a.name}${a.titles.length?` · ${a.titles[0]}`:""}</td><td>${world.guilds.find(g=>g.id===a.guildId)?.name}</td><td>${a.elo}</td><td>${a.games?Math.round(a.wins/a.games*100):0}%</td></tr>`).join("")}</tbody></table></div><div><h2>审判编年</h2>${world.chronicles.length?world.chronicles.slice(0,6).map(c=>`<article class="chronicle"><b>${c.title}</b><p>${c.summary}</p><small>${c.highlights.join(" · ")}</small></article>`).join(""):"<p class=muted>首场审判结束后，这里将留下不泄密的章节战报。</p>"}</div></section></main>`;
   document.querySelector("#back")!.addEventListener("click", renderHome); document.querySelectorAll<HTMLElement>("[data-agent]").forEach(row=>row.addEventListener("click",()=>void showAgent(row.dataset.agent!)));

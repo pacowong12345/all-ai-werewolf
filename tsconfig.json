@@ -8,5 +8,5 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["server", "client", "tests"]
+  "include": ["server", "client", "tests", "scripts/**/*.ts"]
 }
