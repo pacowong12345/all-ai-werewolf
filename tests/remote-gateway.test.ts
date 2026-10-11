@@ -1,9 +1,23 @@
 import {it,expect} from 'vitest';
+import {scryptSync} from 'node:crypto';
 import {createServer,type Server} from 'node:http';
 import type {AddressInfo} from 'node:net';
 import {createRemoteGateway,remoteAuthenticated,remoteRouteAllowed} from '../server/remote-gateway.js';
 const password='test-remote-password-123456789';
 const authorization='Basic '+Buffer.from(`viewer:${password}`).toString('base64');
+it('固定账号使用加盐校验值，重建网关后仍有效且拒绝旧账号与错误密码',async()=>{
+ const salt='0123456789abcdef0123456789abcdef',account={username:'demo-user',salt,passwordHash:scryptSync('example8',salt,64).toString('hex')};
+ const auth=(user:string,pass:string)=>'Basic '+Buffer.from(`${user}:${pass}`).toString('base64');
+ for(let n=0;n<2;n++){
+  const gateway=createRemoteGateway(account),url=await listen(gateway.server);gateway.setPublicOrigin(url);
+  try{
+   expect((await fetch(url+'/api/remote-session',{headers:{authorization:auth('demo-user','example8')}})).status).toBe(200);
+   expect((await fetch(url+'/api/remote-session',{headers:{authorization:auth('demo-user','wrong')}})).status).toBe(401);
+   expect((await fetch(url+'/api/remote-session',{headers:{authorization}})).status).toBe(401);
+  }finally{await close(gateway.server);}
+ }
+ expect(()=>createRemoteGateway({...account,passwordHash:'bad'})).toThrow();
+});
 async function listen(server:Server){await new Promise<void>(r=>server.listen(0,'127.0.0.1',r));return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;}
 async function close(server:Server){server.closeAllConnections();await new Promise<void>(r=>server.close(()=>r()));}
 it('鉴权拒绝空凭据、短密码及错误用户；路由采用白名单',()=>{

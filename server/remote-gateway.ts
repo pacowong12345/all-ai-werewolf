@@ -1,5 +1,11 @@
 import {createServer, type IncomingMessage} from 'node:http';
-import {timingSafeEqual} from 'node:crypto';
+import {timingSafeEqual,scryptSync} from 'node:crypto';
+
+export interface RemoteAccount {username:string;salt:string;passwordHash:string}
+export function validateRemoteAccount(account:RemoteAccount){
+ if(!account||typeof account.username!=='string'||!account.username.trim()||account.username.length>128||/[:\r\n]/.test(account.username)||!/^[a-f0-9]{32}$/.test(account.salt)||!/^[a-f0-9]{128}$/.test(account.passwordHash))throw Error('本地远程账号配置无效');
+ return account;
+}
 
 const uuid='[a-f0-9-]{36}';
 export function remoteRouteAllowed(method:string,path:string) {
@@ -10,8 +16,15 @@ export function remoteRouteAllowed(method:string,path:string) {
   /^\/api\/world\/agents\/agent-\d{2}$/.test(path);
  return method==='POST'&&(path==='/api/games'||new RegExp(`^/api/games/${uuid}/control$`).test(path));
 }
-export function remoteAuthenticated(header:string|undefined,password:string) {
- if(password.length<24||!header?.startsWith('Basic '))return false;
+export function remoteAuthenticated(header:string|undefined,password:string|RemoteAccount) {
+ if(!header?.startsWith('Basic ')||header.length>2048)return false;
+ if(typeof password!=='string'){
+  const decoded=Buffer.from(header.slice(6),'base64').toString('utf8'),colon=decoded.indexOf(':');
+  if(colon<0||decoded.slice(0,colon)!==password.username)return false;
+  const got=scryptSync(decoded.slice(colon+1),password.salt,64),wanted=Buffer.from(password.passwordHash,'hex');
+  return wanted.length===got.length&&timingSafeEqual(got,wanted);
+ }
+ if(password.length<24)return false;
  const got=Buffer.from(header.slice(6),'base64'),wanted=Buffer.from(`viewer:${password}`);
  return got.length===wanted.length&&timingSafeEqual(got,wanted);
 }
@@ -22,8 +35,8 @@ async function readBody(req:IncomingMessage) {
 }
 
 /** Separate loopback-only gateway: never forward credentials or arbitrary URLs. */
-export function createRemoteGateway(password:string,upstream='http://127.0.0.1:3000') {
- if(password.length<24)throw Error('远程密码过短');
+export function createRemoteGateway(password:string|RemoteAccount,upstream='http://127.0.0.1:3000') {
+ if(typeof password==='string'){if(password.length<24)throw Error('远程密码过短');}else validateRemoteAccount(password);
  const local=new URL(upstream);
  if(local.hostname!=='127.0.0.1'||local.protocol!=='http:')throw Error('上游必须是本机服务');
  let publicOrigin='',busy=false,uncertainStart=false,starts=0,windowStart=Date.now(),failures=0,writes=0;
@@ -36,9 +49,10 @@ export function createRemoteGateway(password:string,upstream='http://127.0.0.1:3
   if(!publicOrigin){send(503,'远程入口准备中');return;}
   if(req.headers.host!==new URL(publicOrigin).host){send(403,'访问地址不匹配');return;}
   if(Date.now()-windowStart>60000){windowStart=Date.now();failures=0;writes=0;}
+  if(failures>=30){send(429,'登录失败次数过多，请一分钟后重试');return;}
   if(!remoteAuthenticated(req.headers.authorization,password)){
    if(++failures>30){send(429,'登录失败次数过多，请一分钟后重试');return;}
-   res.setHeader('WWW-Authenticate','Basic realm="Moon Council"');send(401,'请输入电脑启动窗口中的用户名和临时密码');return;
+   res.setHeader('WWW-Authenticate','Basic realm="Moon Council"');send(401,'请输入远程展示账号和密码');return;
   }
   const raw=req.url??'/';
   if(raw.includes('%')||raw.includes('\\')||raw.includes('..')||raw.startsWith('//')){send(400,'无效路径');return;}
